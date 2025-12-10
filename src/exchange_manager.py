@@ -1,0 +1,89 @@
+"""
+交易所连接管理函数
+负责创建交易所实例和检查连接
+"""
+
+import ccxt
+import sys
+from typing import Optional
+
+# 配置信息
+API_KEY = "fa8d8b46-8b14-4670-9493-85f038c078a6"
+API_SECRET = "B90D7B088FC2A4F2220E8603CC6DE220"
+API_PASSWORD = "Deng#147258"
+PROXY = "http://127.0.0.1:7890"
+
+def create_exchange() -> ccxt.okx:
+    """
+    创建交易所实例
+
+    Args:
+        api_key: API密钥
+        api_secret: API密钥
+        api_password: API密码（OKX特有）
+        proxy: 代理地址
+
+    Returns:
+        ccxt.okx: 交易所实例
+    """
+    try:
+        exchange = ccxt.okx({
+            "apiKey": API_KEY,
+            "secret": API_SECRET,
+            "password": API_PASSWORD,  # OKX 特有
+            "enableRateLimit": True,  # 启用速率限制，避免请求过快
+            "timeout": 30000,  # 30秒超时
+            "proxies": {
+                "http": PROXY,
+                "https": PROXY,
+            },
+            "options": {
+                "defaultType": "spot",  # 默认现货交易
+            }
+        })
+
+        # 测试连接
+        if not check_connection(exchange):
+            print("\n❌ 连接失败，程序退出")
+            sys.exit(1)
+
+        return exchange
+    except Exception as e:
+        print(f"❌ 创建交易所实例失败: {e}")
+        sys.exit(1)
+
+
+def check_connection(exchange: ccxt.okx) -> bool:
+    """
+    测试交易所连接
+
+    Args:
+        exchange: 交易所实例
+        proxy: 代理地址
+
+    Returns:
+        bool: 连接是否成功
+    """
+    if exchange is None:
+        print("❌ 交易所实例未创建")
+        return False
+
+    try:
+        print("🔍 正在测试连接...")
+        exchange.load_markets()
+        print("✅ 连接成功！")
+        return True
+    except ccxt.NetworkError as e:
+        print(f"❌ 网络错误: {e}")
+        print("💡 请检查：")
+        print("   1. 网络连接是否正常")
+        print(f"   2. 代理服务器是否运行（{PROXY}）")
+        print("   3. API 密钥是否正确")
+        return False
+    except ccxt.ExchangeError as e:
+        print(f"❌ 交易所错误: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ 未知错误: {e}")
+        return False
+
