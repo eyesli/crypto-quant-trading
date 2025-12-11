@@ -10,10 +10,6 @@ from src.service import start
 def main():
     """主函数 - 启动 service"""
     try:
-        """启动服务"""
-        print("=" * 60)
-        print("🚀交易所数据获取工具")
-        print("=" * 60)
         start()
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")
