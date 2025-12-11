@@ -7,7 +7,7 @@ from src.strategy import determine_trade_plan, run_complex_strategy
 SYMBOL = "BTC/USDC:USDC"
 
 REFERENCE_ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
-
+import ccxt
 
 def reference_direction_from_address() -> Optional[str]:
     """
@@ -19,9 +19,8 @@ def reference_direction_from_address() -> Optional[str]:
     return None
 
 
-def start():
+def start(exchange:ccxt.hyperliquid):
     # 创建交易所实例并初始化连接
-    exchange = create_exchange()
 
     # 获取账户概览
     account_overview = fetch_account_overview(exchange)
