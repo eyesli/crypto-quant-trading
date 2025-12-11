@@ -6,10 +6,11 @@ import time
 from typing import Optional
 
 from src.exchange_manager import create_exchange
-from src.market_data import fetch_ticker, fetch_ohlcv
+from src.market_data import fetch_ticker, fetch_ohlcv, fetch_account_overview
+from src.trading import open_perp_limit_position
 from src.strategy import determine_trade_plan
 
-SYMBOL = "BTC/USDC"
+SYMBOL = "BTC/USDC:USDC"
 
 REFERENCE_ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
 
@@ -24,23 +25,39 @@ def reference_direction_from_address() -> Optional[str]:
 
     return None
 
-
+def debug_market(exchange, symbol: str):
+    markets = exchange.load_markets()
+    market = markets.get(symbol)
+    print("\n🔍 市场信息调试")
+    print("symbol:      ", symbol)
+    print("type:        ", market.get("type"))
+    print("spot:        ", market.get("spot"))
+    print("swap(永续):  ", market.get("swap"))
+    print("contract:    ", market.get("contract"))
 def start():
 
 
     # 创建交易所实例并初始化连接
     exchange = create_exchange()
+    # SYMBOL = "BTC/USDC:USDC"  # 注意这里先改成这个
+    # debug_market(exchange, SYMBOL)
+    # exit()
+
+
+
+    # 获取账户概览
+    fetch_account_overview(exchange)
     # 获取实时行情
-    fetch_ticker(exchange, SYMBOL)
+    # fetch_ticker(exchange, SYMBOL)
 
     # 等待一下，避免请求过快
     time.sleep(1)
 
-    ohlcv_4h = fetch_ohlcv(exchange, SYMBOL, timeframe="4h", limit=50)
+    ohlcv_4h = fetch_ohlcv(exchange, SYMBOL, timeframe="4h", limit=10)
     # 等待一下
     time.sleep(1)
 
-    ohlcv_1d = fetch_ohlcv(exchange, SYMBOL, timeframe="1d", limit=30)
+    ohlcv_1d = fetch_ohlcv(exchange, SYMBOL, timeframe="1d", limit=5)
 
     reference_direction = reference_direction_from_address()
     plan = determine_trade_plan(ohlcv_4h or [], reference_direction)
@@ -58,7 +75,21 @@ def start():
     print(f"止损: {plan['stop_loss'] or '-'}")
     print(f"止盈: {plan['take_profit'] or '-'}")
     print(f"理由: {plan['reason']}")
+    #获取实时行情
+    ticker = exchange.fetch_ticker(SYMBOL)
+    last = ticker.get("last")
+    limit_px = last
+    open_perp_limit_position(
+        exchange=exchange,
+        symbol=SYMBOL,
+        direction="LONG",
+        stop_loss=88000,
+        limit_price=limit_px,
+        risk_pct=0.01,
+        leverage=5.0,
+        post_only=False,  # 想强制只做挂单，就改 True
+    )
 
-    print("\n✅ 数据获取与策略计算完成！")
+    # print("\n✅ 数据获取与策略计算完成！")
 
 

@@ -8,7 +8,7 @@ import sys
 from typing import Optional
 
 
-PROXY = "http://127.0.0.1:7890"
+# PROXY = "http://127.0.0.1:7890"
 
 def create_exchange() -> ccxt.hyperliquid:
     """
@@ -28,6 +28,9 @@ def create_exchange() -> ccxt.hyperliquid:
         exchange = ccxt.hyperliquid({
             "walletAddress": "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D",  # /!\ Public address of your account/wallet
             "privateKey": "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0",  # Private key from the API wallet
+            'options': {
+                'defaultType': 'swap',  # 1. 确保是合约模式
+            }
         })
 
         # exchange = ccxt.okx({
@@ -45,10 +48,10 @@ def create_exchange() -> ccxt.hyperliquid:
         #     }
         # })
 
-        # 测试连接
-        if not check_connection(exchange):
-            print("\n❌ 连接失败，程序退出")
-            sys.exit(1)
+        # # 测试连接
+        # if not check_connection(exchange):
+        #     print("\n❌ 连接失败，程序退出")
+        #     sys.exit(1)
 
         return exchange
     except Exception as e:
@@ -80,8 +83,8 @@ def check_connection(exchange: ccxt.hyperliquid) -> bool:
         print(f"❌ 网络错误: {e}")
         print("💡 请检查：")
         print("   1. 网络连接是否正常")
-        print(f"   2. 代理服务器是否运行（{PROXY}）")
-        print("   3. API 密钥是否正确")
+        # print(f"   2. 代理服务器是否运行（{PROXY}）")
+        print("   2. API 密钥是否正确")
         return False
     except ccxt.ExchangeError as e:
         print(f"❌ 交易所错误: {e}")
