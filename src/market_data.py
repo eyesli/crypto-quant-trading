@@ -5,21 +5,20 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List
-from typing import Optional, Dict
-from typing import Dict, Any
 from ccxt.base.types import Position, Balances
 import ccxt
 
 from typing import Any, Optional, Dict
-
+import math
 import pandas as pd
 import pandas_ta as ta
 
-## balance = exchange.fetch_balance()
+
 @dataclass
 class AccountOverview:
     balances: Balances
     positions: List[Position]
+
 
 def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str) -> Optional[Dict]:
     """
@@ -109,22 +108,6 @@ def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str, timeframe: str, limit: 
         print(f"❌ 获取K线数据失败: {e}")
         return None
 
-def _format_chinese_number(num: float) -> str:
-    """
-    简单的中文数字格式化：
-      12345    -> 1.23万
-      12345678 -> 1234.57万
-      123456789 -> 1.23亿
-    用于打印余额、仓位名义价值等。
-    """
-    abs_num = abs(num)
-    if abs_num >= 1_0000_0000:
-        return f"{num / 1_0000_0000:.2f}亿"
-    elif abs_num >= 10_000:
-        return f"{num / 10_000:.2f}万"
-    else:
-        return f"{num:,.2f}"
-
 
 def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     """
@@ -135,6 +118,8 @@ def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("timestamp", inplace=True)
     return df
+
+
 def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     """
     在 df 上追加各种技术指标列，使用 pandas_ta。
@@ -170,16 +155,18 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     # ===== 2. 均值回归因子 =====
     bbands = ta.bbands(close, length=20, std=2.0)
-    df["bb_mid"] = bbands["BBM_20_2.0"]
-    df["bb_upper"] = bbands["BBU_20_2.0"]
-    df["bb_lower"] = bbands["BBL_20_2.0"]
-    df["bb_width"] = bbands["BBB_20_2.0"]  # 同时给波动率用
+
+    df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
+    df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
+    df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]  # 带宽，可用于波动率指标
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"]  # 可选：价格在布林带中的百分位
 
     # Keltner Channel
     kelt = ta.kc(high, low, close, length=20)
-    df["kc_mid"] = kelt["KCM_20_2.0"]
-    df["kc_upper"] = kelt["KCU_20_2.0"]
-    df["kc_lower"] = kelt["KCL_20_2.0"]
+    df["kc_mid"] = kelt["KCBe_20_2"]
+    df["kc_upper"] = kelt["KCUe_20_2"]
+    df["kc_lower"] = kelt["KCLe_20_2"]
 
     # VWAP（通常用在 intraday，这里直接算一版）
     df["vwap"] = ta.vwap(high, low, close, vol)
@@ -227,12 +214,13 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     # Breakout + Volume：同时突破 + 放量
     df["breakout_up_with_vol"] = (
-        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
+            (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
     ).astype(int)
 
     return df
 
-def fetch_market_data(exchange: ccxt.hyperliquid,symbol: str) -> Dict[str, Any]:
+
+def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]:
     """
     获取指定交易对的多周期（1m / 1h / 4h / 1d / 1w）K线、行情、资金费率、盘口等信息，供策略分析使用。
     """
@@ -249,21 +237,50 @@ def fetch_market_data(exchange: ccxt.hyperliquid,symbol: str) -> Dict[str, Any]:
         "1d": 120,
         "1w": 104,
     }
-
+    snapshot: Dict[str, Any] = {
+        "symbol": symbol,
+        "timeframes": {},
+        "metrics": {},
+    }
     ohlcv_map: Dict[str, List[List[float]]] = {}
+    df_map: Dict[str, pd.DataFrame] = {}
 
     for timeframe, limit in timeframe_settings.items():
         data = fetch_ohlcv(exchange, symbol, timeframe, limit)
-        if data:
-            ohlcv_map[timeframe] = data
+        if not data:
+            continue
+        ohlcv_map[timeframe] = data
+        df = ohlcv_to_df(data)
+        df = compute_technical_factors(df)
+        df_map[timeframe] = df
+    snapshot["timeframes"]["ohlcv"] = ohlcv_map
+    snapshot["timeframes"]["ohlcv_df"] = df_map
 
     funding_info = exchange.fetch_funding_rate(symbol)
+    # 1.25e-05
     funding_rate = funding_info.get("fundingRate")
+    # {'baseVolume': None, 'datetime': None,
+    #  'info': {'baseId': 0, 'dayBaseVlm': '49885.98866', 'dayNtlVlm': '4574544356.8517580032', 'funding': '0.0000125',
+    #           'impactPxs': ['89804.0', '89833.0'], 'marginTableId': '56', 'markPx': '89842.0', 'maxLeverage': '40',
+    #           'midPx': '89818.5', 'name': 'BTC', 'openInterest': '21528.52084', 'oraclePx': '89875.0',
+    #           'premium': '-0.0004673157', 'prevDayPx': '92026.0', 'szDecimals': '5'}, 'openInterestAmount': 21528.52084,
+    #  'openInterestValue': None, 'quoteVolume': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': None}
     interest = exchange.fetch_open_interest(symbol)
+
+    # {'asks': [[89768.0, 14.26363], [89769.0, 1.80097], [89770.0, 1.72654], [89771.0, 2.22226], [89772.0, 2.57124],
+    #           [89773.0, 2.1163], [89774.0, 0.41978], [89775.0, 3.66434], [89776.0, 0.62151], [89777.0, 0.2443],
+    #           [89778.0, 2.33257], [89779.0, 1.99476], [89780.0, 1.27619], [89781.0, 0.24205], [89782.0, 0.26265],
+    #           [89783.0, 4.10493], [89784.0, 3.88559], [89785.0, 6.32247], [89786.0, 1.48073], [89787.0, 7.17681]],
+    #  'bids': [[89767.0, 1.11978], [89766.0, 0.00026], [89765.0, 0.0336], [89764.0, 0.00013], [89763.0, 0.00027],
+    #           [89762.0, 0.11225], [89761.0, 0.2229], [89760.0, 0.00013], [89759.0, 0.44587], [89758.0, 1.15676],
+    #           [89757.0, 0.25449], [89756.0, 0.45221], [89755.0, 0.27143], [89754.0, 3.71832], [89753.0, 0.93806],
+    #           [89752.0, 0.9379], [89751.0, 2.0736], [89750.0, 1.20233], [89749.0, 1.34698], [89748.0, 1.03358]],
+    #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
     order_book = exchange.fetch_order_book(symbol, limit=100)
 
-
     return None
+
+
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
     """
     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
@@ -281,9 +298,9 @@ def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
         print("\n" + "=" * 60)
         print("💰 账户余额概览")
         print("=" * 60)
-        print(f"总权益:      {_format_chinese_number(total_usdc)} USDC")
-        print(f"可用余额:    {_format_chinese_number(free_usdc)} USDC")
-        print(f"已用保证金:  {_format_chinese_number(used_usdc)} USDC")
+        print(f"总权益:      {total_usdc} USDC")
+        print(f"可用余额:    {free_usdc} USDC")
+        print(f"已用保证金:  {used_usdc} USDC")
         print("=" * 60 + "\n")
 
         # 2. 获取仓位

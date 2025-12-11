@@ -2,7 +2,7 @@ from typing import Optional
 
 from src.exchange_manager import create_exchange
 from src.market_data import fetch_account_overview, fetch_market_data
-from src.strategy import determine_trade_plan, run_complex_strategy
+from src.strategy import run_complex_strategy
 
 SYMBOL = "BTC/USDC:USDC"
 
@@ -24,7 +24,7 @@ def start(exchange:ccxt.hyperliquid):
 
     # 获取账户概览
     account_overview = fetch_account_overview(exchange)
-    market_data = fetch_market_data(exchange)
+    market_data = fetch_market_data(exchange,SYMBOL)
 
     # 获取交易决策
     plan = run_complex_strategy(
