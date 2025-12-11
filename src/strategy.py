@@ -7,6 +7,8 @@
 from statistics import mean
 from typing import Dict, List, Optional
 
+from src.market_data import AccountOverview
+
 
 def _get_closes(ohlcv: List[List[float]]) -> List[float]:
     return [candle[4] for candle in ohlcv]
@@ -73,6 +75,18 @@ def _swing_levels(ohlcv: List[List[float]]) -> Dict[str, float]:
     lows = [candle[3] for candle in ohlcv]
     highs = [candle[2] for candle in ohlcv]
     return {"recent_low": min(lows), "recent_high": max(highs)}
+
+def run_complex_strategy( account_overview:AccountOverview,market_data):
+    balances = account_overview.balances
+    positions = account_overview.positions
+    # 技术线分析 market_data
+    # 强化学习分析(未来加强)
+    # 新闻情绪分析
+    # 巨鲸分析
+    # 经济政策分析
+
+
+    return "STRONG_LONG"  # 测试用
 
 
 def determine_trade_plan(

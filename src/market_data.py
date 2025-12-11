@@ -123,8 +123,9 @@ def _format_chinese_number(num: float) -> str:
     else:
         return f"{num:,.2f}"
 
-
-def fetch_account_overview(exchange: ccxt.hyperliquid) -> Optional[AccountOverview]:
+def fetch_market_data(exchange):
+    pass
+def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
     """
     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
     """
@@ -213,13 +214,13 @@ def fetch_account_overview(exchange: ccxt.hyperliquid) -> Optional[AccountOvervi
                 if contracts is not None:
                     print(f"    仓位数量:     {float(contracts)}")
                 if notional is not None:
-                    print(f"    名义价值:     {_format_chinese_number(float(notional))} USDC")
+                    print(f"    名义价值:     {float(notional)} USDC")
                 if entry_price is not None:
                     print(f"    开仓均价:     {entry_price:.2f}")
 
                 if upnl is not None:
                     # 根据正负添加颜色 (可选)
-                    print(f"    未实现盈亏:   {_format_chinese_number(float(upnl))} USDC")
+                    print(f"    未实现盈亏:   {float(upnl)} USDC")
                 if roe is not None:
                     print(f"    收益率(ROE):  {roe:.2f}%")
                 if liq_price is not None:
@@ -248,4 +249,4 @@ def fetch_account_overview(exchange: ccxt.hyperliquid) -> Optional[AccountOvervi
     except Exception as e:
         print(f"❌ 获取账户信息时发生未知错误: {e}")
         # import traceback; traceback.print_exc() # 调试时可打开
-        return None
+        raise

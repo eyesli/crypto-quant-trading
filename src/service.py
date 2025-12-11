@@ -1,14 +1,8 @@
-"""
-OKX 交易所数据获取服务
-"""
-
-import time
 from typing import Optional
 
 from src.exchange_manager import create_exchange
-from src.market_data import fetch_ticker, fetch_ohlcv, fetch_account_overview
-from src.trading import open_perp_limit_position
-from src.strategy import determine_trade_plan
+from src.market_data import fetch_account_overview, fetch_market_data
+from src.strategy import determine_trade_plan, run_complex_strategy
 
 SYMBOL = "BTC/USDC:USDC"
 
@@ -22,50 +16,37 @@ def reference_direction_from_address() -> Optional[str]:
     这里先占位，未来可以接入链上交易记录，提取该地址最近的做多/做空方向。
     当前返回 None，表示无参考信号。
     """
-
     return None
 
 
 def start():
-
-
     # 创建交易所实例并初始化连接
     exchange = create_exchange()
 
     # 获取账户概览
     account_overview = fetch_account_overview(exchange)
-    positions = account_overview.positions
-    balances = account_overview.balances
+    market_data = fetch_market_data(exchange)
 
+    # 获取交易决策
+    plan = run_complex_strategy(
+        account_overview,market_data
+    )
+
+    # fetch_market_data();
+
+    # ticker = exchange.fetch_ticker(SYMBOL)
+    # current_price = ticker['last']
+    # exchange.create_order(
+    #     symbol=SYMBOL,
+    #     type="market",
+    #     side="sell",
+    #     amount=0.00043,
+    #     price=current_price,
+    #     params={"reduceOnly": True,  # 只平仓，不反向开新仓
+    #             "slippage": 0.01,  # 可选：控制滑点，比如 1%（默认是 5%）
+    #             },
+    # )
     # 获取实时行情
-    # fetch_ticker(exchange, SYMBOL)
-
-    # 等待一下，避免请求过快
-    time.sleep(1)
-
-    ohlcv_4h = fetch_ohlcv(exchange, SYMBOL, timeframe="4h", limit=10)
-    # 等待一下
-    time.sleep(1)
-
-    ohlcv_1d = fetch_ohlcv(exchange, SYMBOL, timeframe="1d", limit=5)
-
-    reference_direction = reference_direction_from_address()
-    plan = determine_trade_plan(ohlcv_4h or [], reference_direction)
-    higher_timeframe_plan = determine_trade_plan(ohlcv_1d or [], reference_direction)
-
-    if higher_timeframe_plan.get("direction"):
-        if higher_timeframe_plan["direction"] == plan.get("direction"):
-            plan["reason"] += "; 5分钟级别同向确认"
-        else:
-            plan["reason"] += "; 5分钟级别方向相反，降低信心"
-
-    print("\n🧭 交易计划预览")
-    print(f"参考地址: {REFERENCE_ADDRESS}")
-    print(f"方向: {plan['direction'] or '观望'}")
-    print(f"止损: {plan['stop_loss'] or '-'}")
-    print(f"止盈: {plan['take_profit'] or '-'}")
-    print(f"理由: {plan['reason']}")
-    #获取实时行情
     ticker = exchange.fetch_ticker(SYMBOL)
     last = ticker.get("last")
     limit_px = last
@@ -81,5 +62,3 @@ def start():
     # )
 
     # print("\n✅ 数据获取与策略计算完成！")
-
-
