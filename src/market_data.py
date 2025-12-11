@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 
 
-def fetch_ticker(exchange: ccxt.okx, symbol: str = "BTC/USDT") -> Optional[Dict]:
+def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT") -> Optional[Dict]:
     """
     获取交易对的最新行情
 
@@ -48,7 +48,7 @@ def fetch_ticker(exchange: ccxt.okx, symbol: str = "BTC/USDT") -> Optional[Dict]
         return None
 
 
-def fetch_ohlcv(exchange: ccxt.okx, symbol: str = "BTC/USDT",
+def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT",
                 timeframe: str = "1m", limit: int = 10) -> Optional[List]:
     """
     获取K线数据

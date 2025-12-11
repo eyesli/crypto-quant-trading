@@ -9,7 +9,7 @@ from src.exchange_manager import create_exchange
 from src.market_data import fetch_ticker, fetch_ohlcv
 from src.strategy import determine_trade_plan
 
-SYMBOL = "BTC/USDT"
+SYMBOL = "BTC/USDC"
 
 REFERENCE_ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
 
@@ -37,18 +37,15 @@ def start():
     # 等待一下，避免请求过快
     time.sleep(1)
 
-    # 获取1分钟K线数据
-    ohlcv_1m = fetch_ohlcv(exchange, SYMBOL, timeframe="1m", limit=50)
-
+    ohlcv_4h = fetch_ohlcv(exchange, SYMBOL, timeframe="4h", limit=50)
     # 等待一下
     time.sleep(1)
 
-    # 获取5分钟K线数据
-    ohlcv_5m = fetch_ohlcv(exchange, SYMBOL, timeframe="5m", limit=30)
+    ohlcv_1d = fetch_ohlcv(exchange, SYMBOL, timeframe="1d", limit=30)
 
     reference_direction = reference_direction_from_address()
-    plan = determine_trade_plan(ohlcv_1m or [], reference_direction)
-    higher_timeframe_plan = determine_trade_plan(ohlcv_5m or [], reference_direction)
+    plan = determine_trade_plan(ohlcv_4h or [], reference_direction)
+    higher_timeframe_plan = determine_trade_plan(ohlcv_1d or [], reference_direction)
 
     if higher_timeframe_plan.get("direction"):
         if higher_timeframe_plan["direction"] == plan.get("direction"):

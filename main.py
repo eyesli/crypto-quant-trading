@@ -12,7 +12,7 @@ def main():
     try:
         """启动服务"""
         print("=" * 60)
-        print("🚀 OKX 交易所数据获取工具")
+        print("🚀交易所数据获取工具")
         print("=" * 60)
         start()
     except KeyboardInterrupt:

@@ -7,13 +7,10 @@ import ccxt
 import sys
 from typing import Optional
 
-# 配置信息
-API_KEY = "fa8d8b46-8b14-4670-9493-85f038c078a6"
-API_SECRET = "B90D7B088FC2A4F2220E8603CC6DE220"
-API_PASSWORD = "Deng#147258"
+
 PROXY = "http://127.0.0.1:7890"
 
-def create_exchange() -> ccxt.okx:
+def create_exchange() -> ccxt.hyperliquid:
     """
     创建交易所实例
 
@@ -27,20 +24,26 @@ def create_exchange() -> ccxt.okx:
         ccxt.okx: 交易所实例
     """
     try:
-        exchange = ccxt.okx({
-            "apiKey": API_KEY,
-            "secret": API_SECRET,
-            "password": API_PASSWORD,  # OKX 特有
-            "enableRateLimit": True,  # 启用速率限制，避免请求过快
-            "timeout": 30000,  # 30秒超时
-            "proxies": {
-                "http": PROXY,
-                "https": PROXY,
-            },
-            "options": {
-                "defaultType": "spot",  # 默认现货交易
-            }
+
+        exchange = ccxt.hyperliquid({
+            "walletAddress": "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D",  # /!\ Public address of your account/wallet
+            "privateKey": "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0",  # Private key from the API wallet
         })
+
+        # exchange = ccxt.okx({
+        #     "apiKey": API_KEY,
+        #     "secret": API_SECRET,
+        #     "password": API_PASSWORD,  # OKX 特有
+        #     "enableRateLimit": True,  # 启用速率限制，避免请求过快
+        #     "timeout": 30000,  # 30秒超时
+        #     "proxies": {
+        #         "http": PROXY,
+        #         "https": PROXY,
+        #     },
+        #     "options": {
+        #         "defaultType": "spot",  # 默认现货交易
+        #     }
+        # })
 
         # 测试连接
         if not check_connection(exchange):
@@ -53,7 +56,7 @@ def create_exchange() -> ccxt.okx:
         sys.exit(1)
 
 
-def check_connection(exchange: ccxt.okx) -> bool:
+def check_connection(exchange: ccxt.hyperliquid) -> bool:
     """
     测试交易所连接
 
