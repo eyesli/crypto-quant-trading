@@ -214,7 +214,7 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
     order_book = exchange.fetch_order_book(symbol, limit=100)
 
-    return None
+    return snapshot
 
 
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:

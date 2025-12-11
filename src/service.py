@@ -30,6 +30,7 @@ def start(exchange:ccxt.hyperliquid):
     plan = run_complex_strategy(
         account_overview,market_data
     )
+    print(plan)
 
     # fetch_market_data();
 
