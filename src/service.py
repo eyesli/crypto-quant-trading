@@ -3,10 +3,28 @@ OKX 交易所数据获取服务
 """
 
 import time
+from typing import Optional
+
 from src.exchange_manager import create_exchange
 from src.market_data import fetch_ticker, fetch_ohlcv
+from src.strategy import determine_trade_plan
 
 SYMBOL = "BTC/USDT"
+
+REFERENCE_ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
+
+
+def reference_direction_from_address() -> Optional[str]:
+    """
+    获取参考地址的方向。
+
+    这里先占位，未来可以接入链上交易记录，提取该地址最近的做多/做空方向。
+    当前返回 None，表示无参考信号。
+    """
+
+    return None
+
+
 def start():
 
 
@@ -20,14 +38,31 @@ def start():
     time.sleep(1)
 
     # 获取1分钟K线数据
-    ohlcv_1m = fetch_ohlcv(exchange, SYMBOL, timeframe="1m", limit=5)
+    ohlcv_1m = fetch_ohlcv(exchange, SYMBOL, timeframe="1m", limit=50)
 
     # 等待一下
     time.sleep(1)
 
     # 获取5分钟K线数据
-    ohlcv_5m = fetch_ohlcv(exchange, SYMBOL, timeframe="5m", limit=5)
+    ohlcv_5m = fetch_ohlcv(exchange, SYMBOL, timeframe="5m", limit=30)
 
-    print("✅ 数据获取完成！")
+    reference_direction = reference_direction_from_address()
+    plan = determine_trade_plan(ohlcv_1m or [], reference_direction)
+    higher_timeframe_plan = determine_trade_plan(ohlcv_5m or [], reference_direction)
+
+    if higher_timeframe_plan.get("direction"):
+        if higher_timeframe_plan["direction"] == plan.get("direction"):
+            plan["reason"] += "; 5分钟级别同向确认"
+        else:
+            plan["reason"] += "; 5分钟级别方向相反，降低信心"
+
+    print("\n🧭 交易计划预览")
+    print(f"参考地址: {REFERENCE_ADDRESS}")
+    print(f"方向: {plan['direction'] or '观望'}")
+    print(f"止损: {plan['stop_loss'] or '-'}")
+    print(f"止盈: {plan['take_profit'] or '-'}")
+    print(f"理由: {plan['reason']}")
+
+    print("\n✅ 数据获取与策略计算完成！")
 
 
