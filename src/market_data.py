@@ -9,104 +9,15 @@ from ccxt.base.types import Position, Balances
 import ccxt
 
 from typing import Any, Optional, Dict
+
 import math
 import pandas as pd
 import pandas_ta as ta
-
 
 @dataclass
 class AccountOverview:
     balances: Balances
     positions: List[Position]
-
-
-def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str) -> Optional[Dict]:
-    """
-    获取交易对的最新行情（带完整判空 + 字段保护）
-
-    Args:
-        exchange: 交易所实例
-        symbol: 交易对符号，如 "BTC/USDT"
-
-    Returns:
-        dict: 行情数据，失败返回 None
-    """
-    try:
-        print(f"\n📊 正在获取 {symbol} 行情...")
-        ticker = exchange.fetch_ticker(symbol)
-
-        # -------- 判空 --------
-        if not ticker or not isinstance(ticker, dict):
-            print("⚠️ 未获取到有效 ticker 数据")
-            return None
-        last = ticker.get("last")
-        print("\n" + "=" * 60)
-        print(f"📈 {symbol} 实时行情")
-        print(f"最新价格:    ${last:,.2f}")
-        print("=" * 60 + "\n")
-
-        return ticker
-
-    except ccxt.NetworkError as e:
-        print(f"❌ 网络错误: {e}")
-    except ccxt.ExchangeError as e:
-        print(f"❌ 交易所错误: {e}")
-    except Exception as e:
-        print(f"❌ 获取行情失败: {e}")
-
-    return None
-
-
-def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str, timeframe: str, limit: int) -> Optional[List]:
-    """
-    获取K线数据
-
-    Args:
-        exchange: 交易所实例
-        symbol: 交易对符号
-        timeframe: 时间周期，如 "1m", "5m", "1h", "1d"
-        limit: 获取的K线数量
-
-    Returns:
-        list: K线数据列表，失败返回 None
-    """
-    try:
-        print(f"\n📉 正在获取 {symbol} {timeframe} K线数据（最近 {limit} 根）...")
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-
-        if not ohlcv:
-            print("⚠️  未获取到K线数据")
-            return None
-
-        print(f"\n{'=' * 80}")
-        print(f"📊 {symbol} {timeframe} K线数据")
-        print(f"{'=' * 80}")
-        print(f"{'时间':<20} {'开盘':<12} {'最高':<12} {'最低':<12} {'收盘':<12} {'成交量':<15}")
-        print("-" * 80)
-
-        for candle in ohlcv:
-            timestamp = datetime.fromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-            open_price = candle[1]
-            high_price = candle[2]
-            low_price = candle[3]
-            close_price = candle[4]
-            volume = candle[5]
-
-            print(f"{timestamp:<20} ${open_price:<11,.2f} ${high_price:<11,.2f} "
-                  f"${low_price:<11,.2f} ${close_price:<11,.2f} {volume:<15,.2f}")
-
-        print(f"{'=' * 80}\n")
-
-        return ohlcv
-    except ccxt.NetworkError as e:
-        print(f"❌ 网络错误: {e}")
-        return None
-    except ccxt.ExchangeError as e:
-        print(f"❌ 交易所错误: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ 获取K线数据失败: {e}")
-        return None
 
 
 def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
@@ -118,7 +29,6 @@ def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("timestamp", inplace=True)
     return df
-
 
 def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -159,8 +69,8 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
-    df["bb_width"] = bbands["BBB_20_2.0_2.0"]  # 带宽，可用于波动率指标
-    df["bb_percent"] = bbands["BBP_20_2.0_2.0"]  # 可选：价格在布林带中的百分位
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
 
     # Keltner Channel
     kelt = ta.kc(high, low, close, length=20)
@@ -171,6 +81,11 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     # VWAP（通常用在 intraday，这里直接算一版）
     df["vwap"] = ta.vwap(high, low, close, vol)
 
+    # ---- AVWAP：从整段数据起点锚定的成交量加权成本线 ----
+    cum_pv = (close * vol).cumsum()
+    cum_vol = vol.cumsum()
+    df["avwap_full"] = cum_pv / cum_vol   # 越靠后越稳定，可看作“大资金平均成本”
+
     # Z-Score（价格相对滚动均值的偏离）
     mean_20 = close.rolling(20).mean()
     std_20 = close.rolling(20).std()
@@ -178,9 +93,6 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     # Williams %R
     df["williams_r"] = ta.willr(high, low, close, length=14)
-
-    # RSI 也可以作为均值回归信号：高于 70/低于 30
-    # 这里就复用 rsi_14，不重复建列
 
     # ===== 3. 波动率因子 =====
     df["atr_14"] = ta.atr(high, low, close, length=14)
@@ -214,11 +126,35 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     # Breakout + Volume：同时突破 + 放量
     df["breakout_up_with_vol"] = (
-            (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
+        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
     ).astype(int)
 
-    return df
+    # ---- Volume Profile + POC（简单整段版）----
+    # 1) 选择价格范围
+    price_min = close.min()
+    price_max = close.max()
+    if price_max > price_min:
+        bins = 30  # 划分 30 档价格区间，你可以按需要改
+        bin_size = (price_max - price_min) / bins
 
+        # 每一根K线属于哪个价格档
+        bin_index = ((close - price_min) / bin_size).astype(int).clip(0, bins - 1)
+
+        # 2) 统计每个价格档的累计成交量
+        vol_profile = vol.groupby(bin_index).sum()
+
+        # 3) 找出成交量最多的那个档位 = POC
+        poc_bin = vol_profile.idxmax()
+        poc_price = float(price_min + (poc_bin + 0.5) * bin_size)  # 档位中点价格
+
+        df["poc_full"] = poc_price
+        df["price_to_poc_pct"] = (close - poc_price) / poc_price
+    else:
+        # 价格完全没波动（极端情况），直接置空
+        df["poc_full"] = float("nan")
+        df["price_to_poc_pct"] = float("nan")
+
+    return df
 
 def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]:
     """
@@ -246,7 +182,7 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     df_map: Dict[str, pd.DataFrame] = {}
 
     for timeframe, limit in timeframe_settings.items():
-        data = fetch_ohlcv(exchange, symbol, timeframe, limit)
+        data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         if not data:
             continue
         ohlcv_map[timeframe] = data
