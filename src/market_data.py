@@ -10,6 +10,10 @@ from typing import Dict, Any
 from ccxt.base.types import Position, Balances
 import ccxt
 
+from typing import Any, Optional, Dict
+
+import pandas as pd
+import pandas_ta as ta
 
 ## balance = exchange.fetch_balance()
 @dataclass
@@ -105,8 +109,6 @@ def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str, timeframe: str, limit: 
         print(f"❌ 获取K线数据失败: {e}")
         return None
 
-from typing import Any
-
 def _format_chinese_number(num: float) -> str:
     """
     简单的中文数字格式化：
@@ -123,8 +125,145 @@ def _format_chinese_number(num: float) -> str:
     else:
         return f"{num:,.2f}"
 
-def fetch_market_data(exchange):
-    pass
+
+def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
+    """
+    将 ccxt 返回的 ohlcv 列表转换为 pandas DataFrame：
+    columns = [timestamp, open, high, low, close, volume]
+    """
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("timestamp", inplace=True)
+    return df
+def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    在 df 上追加各种技术指标列，使用 pandas_ta。
+    你可以按需删减或扩展。
+    """
+
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"]
+
+    # ===== 1. 趋势与动量因子 =====
+    df["sma_50"] = ta.sma(close, length=50)
+    df["ema_50"] = ta.ema(close, length=50)
+    df["wma_50"] = ta.wma(close, length=50)
+
+    macd = ta.macd(close)
+    df["macd"] = macd["MACD_12_26_9"]
+    df["macd_signal"] = macd["MACDs_12_26_9"]
+    df["macd_hist"] = macd["MACDh_12_26_9"]
+
+    df["roc_10"] = ta.roc(close, length=10)
+    df["mom_10"] = ta.mom(close, length=10)
+    df["rsi_14"] = ta.rsi(close, length=14)
+    df["adx_14"] = ta.adx(high, low, close, length=14)["ADX_14"]
+
+    # Breakout 简单标记：收盘价创新 N 日新高/新低
+    lookback = 20
+    df["n_high"] = close.rolling(lookback).max()
+    df["n_low"] = close.rolling(lookback).min()
+    df["breakout_up"] = (close >= df["n_high"]).astype(int)
+    df["breakout_down"] = (close <= df["n_low"]).astype(int)
+
+    # ===== 2. 均值回归因子 =====
+    bbands = ta.bbands(close, length=20, std=2.0)
+    df["bb_mid"] = bbands["BBM_20_2.0"]
+    df["bb_upper"] = bbands["BBU_20_2.0"]
+    df["bb_lower"] = bbands["BBL_20_2.0"]
+    df["bb_width"] = bbands["BBB_20_2.0"]  # 同时给波动率用
+
+    # Keltner Channel
+    kelt = ta.kc(high, low, close, length=20)
+    df["kc_mid"] = kelt["KCM_20_2.0"]
+    df["kc_upper"] = kelt["KCU_20_2.0"]
+    df["kc_lower"] = kelt["KCL_20_2.0"]
+
+    # VWAP（通常用在 intraday，这里直接算一版）
+    df["vwap"] = ta.vwap(high, low, close, vol)
+
+    # Z-Score（价格相对滚动均值的偏离）
+    mean_20 = close.rolling(20).mean()
+    std_20 = close.rolling(20).std()
+    df["zscore_20"] = (close - mean_20) / std_20
+
+    # Williams %R
+    df["williams_r"] = ta.willr(high, low, close, length=14)
+
+    # RSI 也可以作为均值回归信号：高于 70/低于 30
+    # 这里就复用 rsi_14，不重复建列
+
+    # ===== 3. 波动率因子 =====
+    df["atr_14"] = ta.atr(high, low, close, length=14)
+    # NATR = ATR / close
+    df["natr_14"] = df["atr_14"] / close
+
+    # Historical Vol（简单用 log_return 的 std）
+    log_ret = (close / close.shift(1)).apply(lambda x: math.log(x) if x > 0 else 0)
+    df["hv_20"] = log_ret.rolling(20).std()
+
+    # HV Ratio：当前 HV vs 长周期 HV
+    df["hv_100"] = log_ret.rolling(100).std()
+    df["hv_ratio"] = df["hv_20"] / df["hv_100"]
+
+    # Skew / Kurtosis（滚动）
+    df["ret_skew_50"] = log_ret.rolling(50).skew()
+    df["ret_kurt_50"] = log_ret.rolling(50).kurt()
+
+    # ===== 4. 价量结构因子 =====
+    # Volume Spike：相对过去 N 根的倍数
+    vol_ma_20 = vol.rolling(20).mean()
+    df["vol_spike_ratio"] = vol / vol_ma_20
+
+    # OBV
+    df["obv"] = ta.obv(close, vol)
+
+    # HH/HL 结构简单判断：当前高点是否超过前 N 高点
+    swing_lookback = 5
+    df["swing_high"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
+    df["swing_low"] = low[(low.shift(1) > low) & (low.shift(-1) > low)]
+
+    # Breakout + Volume：同时突破 + 放量
+    df["breakout_up_with_vol"] = (
+        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
+    ).astype(int)
+
+    return df
+
+def fetch_market_data(exchange: ccxt.hyperliquid,symbol: str) -> Dict[str, Any]:
+    """
+    获取指定交易对的多周期（1m / 1h / 4h / 1d / 1w）K线、行情、资金费率、盘口等信息，供策略分析使用。
+    """
+    #
+    # snapshot: Dict[str, Any] = {"symbol": symbol, "timeframe": "1h"}
+    #
+    # # ticker = fetch_ticker(exchange, symbol)
+    # snapshot["ticker"] = ticker or {}
+
+    timeframe_settings = {
+        "1m": 500,
+        "1h": 200,
+        "4h": 150,
+        "1d": 120,
+        "1w": 104,
+    }
+
+    ohlcv_map: Dict[str, List[List[float]]] = {}
+
+    for timeframe, limit in timeframe_settings.items():
+        data = fetch_ohlcv(exchange, symbol, timeframe, limit)
+        if data:
+            ohlcv_map[timeframe] = data
+
+    funding_info = exchange.fetch_funding_rate(symbol)
+    funding_rate = funding_info.get("fundingRate")
+    interest = exchange.fetch_open_interest(symbol)
+    order_book = exchange.fetch_order_book(symbol, limit=100)
+
+
+    return None
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
     """
     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单

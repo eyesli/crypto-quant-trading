@@ -79,11 +79,7 @@ def _swing_levels(ohlcv: List[List[float]]) -> Dict[str, float]:
 def run_complex_strategy( account_overview:AccountOverview,market_data):
     balances = account_overview.balances
     positions = account_overview.positions
-    # 技术线分析 market_data
-    # 强化学习分析(未来加强)
-    # 新闻情绪分析
-    # 巨鲸分析
-    # 经济政策分析
+
 
 
     return "STRONG_LONG"  # 测试用
