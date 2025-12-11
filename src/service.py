@@ -31,8 +31,7 @@ def start():
     # 创建交易所实例并初始化连接
     exchange = create_exchange()
     # 获取实时行情
-    ticker = fetch_ticker(exchange, SYMBOL)
-    print(ticker)
+    fetch_ticker(exchange, SYMBOL)
 
     # 等待一下，避免请求过快
     time.sleep(1)

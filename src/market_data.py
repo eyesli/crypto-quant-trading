@@ -6,11 +6,11 @@
 import ccxt
 from datetime import datetime
 from typing import Optional, Dict, List
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
-
-def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT") -> Optional[Dict]:
+def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str) -> Optional[Dict]:
     """
-    获取交易对的最新行情
+    获取交易对的最新行情（带完整判空 + 字段保护）
 
     Args:
         exchange: 交易所实例
@@ -22,30 +22,28 @@ def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT") -> Option
     try:
         print(f"\n📊 正在获取 {symbol} 行情...")
         ticker = exchange.fetch_ticker(symbol)
-        if not ticker:
-            print("⚠️  获取行情失败，继续尝试获取K线数据...")
-        print(f"\n{'=' * 60}")
+
+        # -------- 判空 --------
+        if not ticker or not isinstance(ticker, dict):
+            print("⚠️ 未获取到有效 ticker 数据")
+            return None
+        last = ticker.get("last")
+        print("\n" + "=" * 60)
         print(f"📈 {symbol} 实时行情")
-        print(f"{'=' * 60}")
-        print(f"最新价格:     ${ticker['last']:,.2f}")
-        print(f"24h 最高价:   ${ticker['high']:,.2f}")
-        print(f"24h 最低价:   ${ticker['low']:,.2f}")
-        print(f"24h 开盘价:   ${ticker['open']:,.2f}")
-        print(f"24h 成交量:   {ticker['quoteVolume']:,.2f} USDT")
-        print(f"24h 涨跌幅:   {ticker['percentage']:.2f}%")
-        print(f"更新时间:     {datetime.fromtimestamp(ticker['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'=' * 60}\n")
+        print(f"最新价格:    ${last:,.2f}")
+        print("=" * 60 + "\n")
 
         return ticker
+
     except ccxt.NetworkError as e:
         print(f"❌ 网络错误: {e}")
-        return None
     except ccxt.ExchangeError as e:
         print(f"❌ 交易所错误: {e}")
-        return None
     except Exception as e:
         print(f"❌ 获取行情失败: {e}")
-        return None
+
+    return None
+
 
 
 def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT",
@@ -99,4 +97,5 @@ def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str = "BTC/USDT",
     except Exception as e:
         print(f"❌ 获取K线数据失败: {e}")
         return None
+
 
