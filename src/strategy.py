@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
+from pprint import pformat
 
 from src.config import TIMEFRAME_SETTINGS
 from src.market_data import AccountOverview
@@ -81,6 +82,26 @@ def generate_trade_plan(
         summary_by_tf[tf] = summ
         # summ["score"] 始终存在（数据不足时为 0），这里统一转换成 float
         score_by_tf[tf] = float(summ.get("score") or 0.0)
+
+    # =========================
+    # Debug：输出每个 timeframe 的汇总结果（summary_by_tf）
+    # =========================
+    # 你要求“输出 summary_by_tf 的内容”：这里把每个周期的 score/label/regime/components/detail 打印出来。
+    # 如果你后续觉得太吵，可以把这段改成写日志文件或增加一个开关。
+    print("\n" + "=" * 100)
+    print(f"📌 summary_by_tf ({symbol})")
+    for tf in timeframes:
+        summ = summary_by_tf.get(tf) or {}
+        brief = {
+            "score": summ.get("score"),
+            "label": summ.get("label"),
+            "regime": summ.get("regime"),
+            "components": summ.get("components"),
+            "detail": summ.get("detail"),
+        }
+        print(f"\n--- {tf} ---")
+        print(pformat(brief, width=120, compact=True))
+    print("=" * 100 + "\n")
 
     # =========================
     # 1) 多周期汇总 score（核心+背景）

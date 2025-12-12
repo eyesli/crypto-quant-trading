@@ -4,7 +4,7 @@ import ccxt
 
 from src.execution import execute_trade_plan
 from src.market_data import fetch_account_overview, fetch_market_data
-from src.models import ExecutionConfig, StrategyConfig, MarketDataSnapshot
+from src.models import ExecutionConfig, StrategyConfig, MarketDataSnapshot, TradePlan
 from src.strategy import generate_trade_plan
 
 
@@ -40,6 +40,6 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     account_overview = fetch_account_overview(exchange)
     market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
 
-    plan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
+    plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)
