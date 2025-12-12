@@ -9,9 +9,12 @@
 - 获取所有币种的仓位信息：方向、数量、杠杆、未实现盈亏、ROE、仓位面值
 - 数字转换成人类易读的中文单位（万 / 亿）
 - 监听变化自动打印
+- ✅ 新增：近期挂单（openOrders）
+- ✅ 新增：近期成交记录（userFills）
 """
 
 import time
+from datetime import datetime
 import requests
 
 # Hyperliquid Info API（无需 API Key，可公开调用）
@@ -22,6 +25,9 @@ ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
 
 # 轮询间隔（秒）
 POLL_INTERVAL = 5
+
+# 只展示最近 N 条成交
+RECENT_FILLS_LIMIT = 10
 
 
 # ----------------------------------------------------------
@@ -72,12 +78,81 @@ def fetch_state(address: str):
 
 
 # ----------------------------------------------------------
+# 🔍 获取该地址的当前挂单（openOrders）
+# ----------------------------------------------------------
+def fetch_open_orders(address: str):
+    """
+    查询该地址当前所有挂单（可以理解为“订单簿里还没成交的单子”）
+    Info endpoint:
+      {
+        "type": "openOrders",
+        "user": <钱包地址>
+      }
+    """
+    payload = {
+        "type": "openOrders",
+        "user": address,
+    }
+    resp = requests.post(API_URL, json=payload, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # 一般返回 list；这里做一下兜底
+    if isinstance(data, list):
+        return data
+    elif isinstance(data, dict):
+        return [data]
+    else:
+        return []
+
+
+# ----------------------------------------------------------
+# 🔍 获取该地址的近期成交记录（userFills）
+# ----------------------------------------------------------
+def fetch_recent_fills(address: str, limit: int = RECENT_FILLS_LIMIT):
+    """
+    查询该地址的约成交记录（成交明细）。
+    Info endpoint:
+      {
+        "type": "userFills",
+        "user": <钱包地址>
+      }
+    返回格式一般为 list[fill]，这里做一下兜底并只取最近 limit 条。
+    """
+    payload = {
+        "type": "userFills",
+        "user": address,
+    }
+    resp = requests.post(API_URL, json=payload, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+
+    fills = []
+    if isinstance(data, list):
+        fills = data
+    elif isinstance(data, dict):
+        # 有些情况下可能只返回一条
+        fills = [data]
+    else:
+        fills = []
+
+    # 按时间排序（time 字段，ms），再截取最近 limit 条
+    def _get_time(f):
+        return int(f.get("time", 0))
+
+    fills_sorted = sorted(fills, key=_get_time, reverse=True)
+    return fills_sorted[:limit]
+
+
+# ----------------------------------------------------------
 # 提取我们关心的字段：
 #   - 账户总权益 accountValue
 #   - 总保证金占用 totalMarginUsed
 #   - 逐币种仓位详情
+#   - 当前挂单列表
+#   - 近期成交记录
 # ----------------------------------------------------------
-def summarize(state: dict) -> dict:
+def summarize(state: dict, open_orders: list, fills: list) -> dict:
     """
     把 API 原始结构拆成可读的数据结构
     """
@@ -132,7 +207,9 @@ def summarize(state: dict) -> dict:
     return {
         "account_value": account_value,
         "margin_used": margin_used,
-        "positions": positions
+        "positions": positions,
+        "open_orders": open_orders,
+        "fills": fills,
     }
 
 
@@ -150,36 +227,89 @@ def print_summary(summary: dict):
     print(f"📌 保证金占用：{format_chinese_number(summary['margin_used'])}（USDC）")
 
     positions = summary["positions"]
-    print(f"📊 当前持仓：{len(positions)} 个币种")
+    open_orders = summary.get("open_orders", [])
+    fills = summary.get("fills", [])
 
+    print(f"📊 当前持仓：{len(positions)} 个币种")
     if not positions:
         print("⚪ 当前未持有任何永续合约仓位")
-        return
-
-    print("-" * 80)
-
-    # 每一个币种的仓位信息
-    for p in positions:
-        print(f"🪙 币种：{p['coin']}   │ 方向：{p['side']}")
-        print(f"📦 仓位数量：{format_chinese_number(p['size'])}")
-        print(f"💼 仓位名义价值：{format_chinese_number(p['pos_value'])} USDC")
-        print(f"🎯 开仓均价：{p['entry']:.2f}")
-
-        # 杠杆信息
-        if p["leverage"]:
-            lev_label = f"{p['leverage']} 倍（{p['lev_type']}）"
-        else:
-            lev_label = "无"
-
-        print(f"⚙️ 杠杆：{lev_label}")
-
-        # 未实现盈亏
-        print(f"📈 未实现盈亏：{format_chinese_number(p['upnl'])} USDC")
-
-        # 收益率ROE
-        print(f"📉 收益率（ROE）：{p['roe'] * 100:.2f}%")
-
+    else:
         print("-" * 80)
+        # 每一个币种的仓位信息
+        for p in positions:
+            print(f"🪙 币种：{p['coin']}   │ 方向：{p['side']}")
+            print(f"📦 仓位数量：{format_chinese_number(p['size'])}")
+            print(f"💼 仓位名义价值：{format_chinese_number(p['pos_value'])} USDC")
+            print(f"🎯 开仓均价：{p['entry']:.2f}")
+
+            # 杠杆信息
+            if p["leverage"]:
+                lev_label = f"{p['leverage']} 倍（{p['lev_type']}）"
+            else:
+                lev_label = "无"
+
+            print(f"⚙️ 杠杆：{lev_label}")
+
+            # 未实现盈亏
+            print(f"📈 未实现盈亏：{format_chinese_number(p['upnl'])} USDC")
+
+            # 收益率ROE
+            print(f"📉 收益率（ROE）：{p['roe'] * 100:.2f}%")
+            print("-" * 80)
+
+    # ---------------- 当前挂单 ----------------
+    print("\n📋 当前挂单：", len(open_orders), "个")
+    if not open_orders:
+        print("⚪ 暂无挂单")
+    else:
+        for o in open_orders:
+            coin = o.get("coin")
+            side_raw = o.get("side")  # 'A' / 'B'，在 Hyperliquid 中分别代表不同方向
+            limit_px = float(o.get("limitPx", 0))
+            sz = float(o.get("sz", 0))
+            ts = int(o.get("timestamp", 0))
+
+            # 时间戳转为人类可读时间
+            if ts > 0:
+                ts_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                ts_str = "-"
+
+            print(f"📝 挂单 最多展示最近：{coin} ｜ side={side_raw} ｜ 价格={limit_px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
+
+    # ---------------- 近期成交记录 ----------------
+    print("\n📒 近期成交记录（最多展示最近", RECENT_FILLS_LIMIT, "条）")
+    if not fills:
+        print("⚪ 暂无成交记录")
+    else:
+        for f in fills:
+            coin = f.get("coin")
+            px = float(f.get("px", 0))
+            sz = float(f.get("sz", 0))
+            dir_raw = f.get("dir") or f.get("side")  # dir: 'Buy'/'Sell'
+            ts = int(f.get("time", 0))
+
+            if ts > 0:
+                ts_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                ts_str = "-"
+
+            # 中文方向
+            if dir_raw == "Buy":
+                direction = "买入"
+            elif dir_raw == "Sell":
+                direction = "卖出"
+            else:
+                direction = str(dir_raw)
+
+            fee = float(f.get("fee", 0))
+            fee_token = f.get("feeToken", "")
+
+            print(f"✅ 成交：{coin} ｜ {direction} ｜ 价格={px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
+            if fee:
+                print(f"   手续费：{fee} {fee_token}")
+
+    print("=" * 80 + "\n")
 
 
 # ----------------------------------------------------------
@@ -195,9 +325,13 @@ def main():
     while True:
         try:
             state = fetch_state(ADDRESS)
-            summary = summarize(state)
+            open_orders = sorted(fetch_open_orders(ADDRESS), key=lambda o: int(o.get("timestamp", 0)), reverse=True)[:10]
 
-            # 只有在数据变化时才打印
+            fills = fetch_recent_fills(ADDRESS, RECENT_FILLS_LIMIT)
+
+            summary = summarize(state, open_orders, fills)
+
+            # 只有在数据变化时才打印（简单粗暴的比较）
             if summary != prev:
                 print_summary(summary)
                 prev = summary

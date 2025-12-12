@@ -4,14 +4,14 @@ import ccxt
 
 from src.execution import execute_trade_plan
 from src.market_data import fetch_account_overview, fetch_market_data
-from src.models import ExecutionConfig, StrategyConfig
+from src.models import ExecutionConfig, StrategyConfig, MarketDataSnapshot
 from src.strategy import generate_trade_plan
 
 
 # =========================
 # 直接硬编码配置（按你的要求）
 # =========================
-SYMBOL = "SOL/USDC:USDC"
+SYMBOL = "BTC/USDC:USDC"
 DRY_RUN = True
 LOOP_SLIPPAGE = 0.01
 POST_ONLY = False
@@ -38,7 +38,7 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     )
 
     account_overview = fetch_account_overview(exchange)
-    market_data = fetch_market_data(exchange, SYMBOL)
+    market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
 
     plan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     print(plan.score)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 from typing import TYPE_CHECKING
 
+from ccxt.base.types import Any, OrderBook
 
 Side = Literal["buy", "sell"]
 PositionSide = Literal["long", "short", "flat"]
@@ -263,13 +264,18 @@ class MarketDataSnapshot:
     """
 
     symbol: str
-    # 多周期K线原始数据（ccxt fetch_ohlcv 的返回）
+    # 多周期 K 线原始数据（ccxt fetch_ohlcv 的返回）。
+    #
+    # 结构：timeframe -> ohlcv list
+    # - timeframe 示例："1m" / "1h" / "4h" / "1d" / "1w"
+    # - ohlcv 每行结构：[timestamp_ms, open, high, low, close, volume]
     ohlcv: dict[str, list[list[float]]]
 
     # 多周期K线 DataFrame（已计算技术指标）
     # 为避免 models.py 强依赖 pandas，这里只在 type-checking 时导入 pd
     ohlcv_df: dict[str, "pd.DataFrame"]
 
+    # 附加指标（ticker/资金费率/未平仓量/盘口微观结构等）
     metrics: "MarketMetrics"
 
 
@@ -290,15 +296,74 @@ class MarketMetrics:
     - ticker/open_interest/order_book 这些结构各交易所差异较大，这里用 dict[str, Any] 保持兼容。
     """
 
+    # -------------------------
+    # 基础行情（Ticker）
+    # -------------------------
+    # ticker：交易所返回的行情快照（dict 结构，常见字段包括 last/bid/ask/volume 等）。
+    #
+    # - 用途：获取当前价格（通常使用 last），以及粗略的买卖价（bid/ask）。
+    # - 经济逻辑：价格用于策略决策与风控；bid/ask 与点差用于衡量交易成本与流动性。
+    # - 失效边界：不同交易所字段名可能不一致；部分字段可能为 None；快市下采样有延迟。
     ticker: dict[str, Any]
-    funding_rate: Optional[float] = None
-    open_interest: Optional[dict[str, Any]] = None
-    order_book: Optional[dict[str, Any]] = None
 
-    # microstructure（轻量）
+    # -------------------------
+    # 衍生品/资金面
+    # -------------------------
+    # funding_rate：永续资金费率（通常为每期费率的小数，例如 1.25e-05）。
+    #
+    # - 经济逻辑：资金费率≈持仓拥挤度与资金成本。
+    #   - 正费率：多方付费，通常代表多头更拥挤/溢价偏高；
+    #   - 负费率：空方付费，通常代表空头更拥挤/溢价偏低。
+    # - 失效边界：各交易所口径不同；大事件时短期会失真；不能单独当成反向信号。
+    funding_rate: Optional[float]
+
+    # open_interest：未平仓量（交易所原样结构）。
+    #
+    # - 经济逻辑：OI 上升常代表杠杆参与增加；结合价格走势可判断趋势是否“有杠杆加成”。
+    # - 失效边界：OI 上升不等于趋势必延续（也可能是对冲/套利结构）；口径差异大。
+    open_interest: Optional[dict[str, Any]]
+
+    # -------------------------
+    # 盘口（Order Book）
+    # -------------------------
+    # order_book：订单簿快照（通常包含 bids/asks 的 [price, size] 列表）。
+    #
+    # - 用途：用于提取微观结构指标（点差、深度、不平衡）。
+    # - 失效边界：盘口是“可撤单”的，容易被 spoofing（假挂单）干扰；且快行情中采样会滞后。
+    order_book: OrderBook
+
+    # -------------------------
+    # microstructure（轻量）——从盘口提取的短线供需/交易成本指标
+    # -------------------------
+    # spread：最优卖价(best ask) - 最优买价(best bid)，单位是“价格”。
+    #
+    # - 经济逻辑：即时交易成本/摩擦，越大表示流动性越差、滑点风险越高。
+    # - 失效边界：快市下 bid/ask 变化很快，单次采样可能失真。
     spread: Optional[float] = None
+
+    # spread_bps：点差按基点(bps=万分之一)标准化：spread / best_ask * 10000。
+    #
+    # - 经济逻辑：跨价格水平可比的成本指标；常用于“点差过滤”（太大就不交易）。
+    # - 失效边界：best_ask 缺失或异常时不可用。
     spread_bps: Optional[float] = None
+
+    # order_book_bid_depth：买盘深度（你当前实现取前 N=20 档 bid 的 size 之和）。
+    #
+    # - 经济逻辑：买方挂单“厚不厚”。越厚通常意味着下方支撑更强、卖出冲击成本更低。
+    # - 失效边界：挂单可撤销；N 的选择会影响结论；假单/刷量会污染深度。
     order_book_bid_depth: Optional[float] = None
+
+    # order_book_ask_depth：卖盘深度（前 N=20 档 ask 的 size 之和）。
+    #
+    # - 经济逻辑：卖方挂单“厚不厚”。越厚通常意味着上方压制更强、买入冲击成本更高。
+    # - 失效边界：同 bid_depth：可撤单、N敏感、spoofing 等。
     order_book_ask_depth: Optional[float] = None
+
+    # order_book_imbalance：盘口不平衡度：(bid_depth - ask_depth) / (bid_depth + ask_depth)，范围约 [-1, 1]。
+    #
+    # - 经济逻辑：刻画短线供需倾斜：
+    #   - 接近 +1：买盘明显更厚（短线偏多）；
+    #   - 接近 -1：卖盘明显更厚（短线偏空）。
+    # - 失效边界：spoofing/撤单会让该指标变成“假信号”；采样延迟会在快市里滞后。
     order_book_imbalance: Optional[float] = None
 

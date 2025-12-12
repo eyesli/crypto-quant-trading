@@ -98,8 +98,25 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     df["williams_r"] = ta.willr(high, low, close, length=14)
 
     # ===== 3. 波动率因子 =====
+    # atr_mean = df["atr_14"].rolling(20).mean().iloc[-1]
+    # atr_now = df["atr_14"].iloc[-1]
+    #
+    # if atr_now > atr_mean:
+    #     print("ATR 高于平均 → 当前波动偏强")
+    # else:
+    #     print("ATR 低于平均 → 当前波动偏弱")
+    #
+
     df["atr_14"] = ta.atr(high, low, close, length=14)
     # NATR = ATR / close
+    #
+    # natr = df["atr_14"] / df["close"]  # 标准化后波动率更真实
+    # natr_now = natr.iloc[-1]
+    # natr_ma = natr.rolling(100).mean().iloc[-1]
+    #
+    # if natr_now < natr_ma * 0.6:
+    #     print("波动率明显压缩（squeeze），可能要爆发趋势")
+
     df["natr_14"] = df["atr_14"] / close
 
     # Historical Vol（简单用 log_return 的 std）
@@ -178,8 +195,8 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnap
     df_map: Dict[str, pd.DataFrame] = {}
 
     # 多周期拉取（timeframe -> K线条数）
-    for timeframe, limit in TIMEFRAME_SETTINGS.items():
-        data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    for timeframe, cfg in TIMEFRAME_SETTINGS.items():
+        data = exchange.fetch_ohlcv(symbol, timeframe, limit=cfg.limit)
         if not data:
             continue
         ohlcv_map[timeframe] = data

@@ -30,67 +30,67 @@ from src.models import (
 from src.risk import calc_amount_from_risk
 
 
-def run_complex_strategy(account_overview: AccountOverview, market_data: MarketDataSnapshot) -> TradePlan:
+def _validate_timeframe_weights(timeframes: list[str]) -> dict[str, float]:
     """
-    兼容旧入口名：返回 TradePlan（不再只是 trend_summary）。
+    手动分组+手动权重版本（按你的要求，不做自动归一化）。
+
+    规则：
+    - 权重从 TIMEFRAME_SETTINGS[tf].weight 读取
+    - 未包含在 TIMEFRAME_SETTINGS 的周期不应该出现在 timeframes
+    - 权重总和必须约等于 1.0，否则直接报错（避免 score 尺度悄悄变化）
     """
-    return generate_trade_plan(account_overview, market_data, cfg=StrategyConfig())
+    weights = {tf: float(TIMEFRAME_SETTINGS[tf].weight) for tf in timeframes}
+    total = sum(weights.values())
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(
+            f"TIMEFRAME_SETTINGS 权重总和必须为 1.0，当前为 {total:.6f}。"
+            f"请在 src/config.py 里手动调整 weight。"
+        )
+    return weights
+
 
 
 def generate_trade_plan(
         account_overview: AccountOverview,
         market_data: MarketDataSnapshot,
-        *,
         cfg: StrategyConfig,
 ) -> TradePlan:
+
     symbol = market_data.symbol or cfg.symbol
     df_map: Dict[str, pd.DataFrame] = market_data.ohlcv_df
 
     # =========================
     # 0) 多周期“全量”技术线分析
     # =========================
-    # 你说“要拿全”：这里不再只取 4h/1h/1m，而是把所有 timeframe 都分析一遍。
     #
     # 说明：
     # - analyze_technical_lines_single_tf：只产出技术线 signals（不算分）
     # - summarize_technical_lines_to_score：把 signals 汇总成 score/label/regime（统一出口）
-    timeframes = list(TIMEFRAME_SETTINGS.keys())  # 默认顺序：1m/1h/4h/1d/1w
-    # 如果 df_map 里有额外 timeframe（未来扩展），也纳入分析
-    for tf in df_map.keys():
-        if tf not in timeframes:
-            timeframes.append(tf)
+    timeframes = list(TIMEFRAME_SETTINGS.keys())  # 由配置决定顺序/分组/权重
 
     signals_by_tf: Dict[str, TechnicalLinesSnapshot] = {}
     summary_by_tf: Dict[str, Dict[str, Any]] = {}
     score_by_tf: Dict[str, float] = {}
 
     for tf in timeframes:
-        sig = analyze_technical_lines_single_tf(df_map.get(tf))
+        #根据指标 进一步分析 经济逻辑
+        sig:TechnicalLinesSnapshot = analyze_technical_lines_single_tf(df_map.get(tf))
         signals_by_tf[tf] = sig
 
         summ = summarize_technical_lines_to_score(sig)
         summary_by_tf[tf] = summ
-
         # summ["score"] 始终存在（数据不足时为 0），这里统一转换成 float
         score_by_tf[tf] = float(summ.get("score") or 0.0)
 
     # =========================
     # 1) 多周期汇总 score（核心+背景）
     # =========================
-    # 核心（更偏“交易决策”）：4h/1h/1m
-    # 背景（更偏“大方向过滤”）：1d/1w
-    #
-    # 这样既满足“拿全”，又避免长周期完全盖过短周期的触发逻辑。
-    score_core = (
-        0.5 * score_by_tf.get("4h", 0.0)
-        + 0.35 * score_by_tf.get("1h", 0.0)
-        + 0.15 * score_by_tf.get("1m", 0.0)
-    )
-    score_bg = 0.5 * score_by_tf.get("1d", 0.0) + 0.5 * score_by_tf.get("1w", 0.0)
-    score = 0.8 * score_core + 0.2 * score_bg
+    tf_weights = _validate_timeframe_weights(timeframes)
+    score = sum(tf_weights[tf] * score_by_tf.get(tf, 0.0) for tf in timeframes)
 
     # 方便你调试：把每个周期的分数串起来（证明“确实拿全了”）
     tf_score_str = ", ".join([f"{tf}={score_by_tf.get(tf, 0.0):.2f}" for tf in timeframes])
+    tf_weight_str = ", ".join([f"{tf}={tf_weights.get(tf, 0.0):.2f}" for tf in timeframes])
 
     ticker = market_data.metrics.ticker or {}
     last = ticker.get("last")
@@ -147,9 +147,10 @@ def generate_trade_plan(
             stop_loss=sl,
             leverage=cfg.leverage,
         )
-        # 这里把“全周期得分”放进 reason，方便你复盘为什么会开仓
-        reason = f"score={score:.2f} (core={score_core:.2f},bg={score_bg:.2f})"
-        reason += f" [{tf_score_str}]"
+        # 这里把“全周期得分 + 权重”放进 reason，方便你复盘为什么会开仓
+        reason = f"score={score:.2f}"
+        reason += f" [scores: {tf_score_str}]"
+        reason += f" [weights: {tf_weight_str}]"
         reason += f"，ATR={atr:.2f}，OB_imb={ob_imb:.2f}"
         return TradePlan(
             symbol=symbol,
