@@ -282,6 +282,53 @@ class MarketDataSnapshot:
 if TYPE_CHECKING:  # pragma: no cover
     import pandas as pd
 
+@dataclass(frozen=True)
+class OrderBookInfo:
+
+    # -------------------------
+    # 盘口（Order Book）
+    # -------------------------
+    # order_book：订单簿快照（通常包含 bids/asks 的 [price, size] 列表）。
+    #
+    # - 用途：用于提取微观结构指标（点差、深度、不平衡）。
+    # - 失效边界：盘口是“可撤单”的，容易被 spoofing（假挂单）干扰；且快行情中采样会滞后。
+    order_book: OrderBook
+
+    # -------------------------
+    # microstructure（轻量）——从盘口提取的短线供需/交易成本指标
+    # -------------------------
+    # spread：最优卖价(best ask) - 最优买价(best bid)，单位是“价格”。
+    #
+    # - 经济逻辑：即时交易成本/摩擦，越大表示流动性越差、滑点风险越高。
+    # - 失效边界：快市下 bid/ask 变化很快，单次采样可能失真。
+    spread: Optional[float] = None
+
+    # spread_bps：点差按基点(bps=万分之一)标准化：spread / best_ask * 10000。
+    #
+    # - 经济逻辑：跨价格水平可比的成本指标；常用于“点差过滤”（太大就不交易）。
+    # - 失效边界：best_ask 缺失或异常时不可用。
+    spread_bps: Optional[float] = None
+
+    # order_book_bid_depth：买盘深度（你当前实现取前 N=20 档 bid 的 size 之和）。
+    #
+    # - 经济逻辑：买方挂单“厚不厚”。越厚通常意味着下方支撑更强、卖出冲击成本更低。
+    # - 失效边界：挂单可撤销；N 的选择会影响结论；假单/刷量会污染深度。
+    order_book_bid_depth: Optional[float] = None
+
+    # order_book_ask_depth：卖盘深度（前 N=20 档 ask 的 size 之和）。
+    #
+    # - 经济逻辑：卖方挂单“厚不厚”。越厚通常意味着上方压制更强、买入冲击成本更高。
+    # - 失效边界：同 bid_depth：可撤单、N敏感、spoofing 等。
+    order_book_ask_depth: Optional[float] = None
+
+    # order_book_imbalance：盘口不平衡度：(bid_depth - ask_depth) / (bid_depth + ask_depth)，范围约 [-1, 1]。
+    #
+    # - 经济逻辑：刻画短线供需倾斜：
+    #   - 接近 +1：买盘明显更厚（短线偏多）；
+    #   - 接近 -1：卖盘明显更厚（短线偏空）。
+    # - 失效边界：spoofing/撤单会让该指标变成“假信号”；采样延迟会在快市里滞后。
+    order_book_imbalance: Optional[float] = None
+
 
 @dataclass(frozen=True)
 class MarketMetrics:

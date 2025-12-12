@@ -8,7 +8,9 @@
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List
+from typing import List, Literal, Any
+
+from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
 import ccxt
 
@@ -20,6 +22,7 @@ import pandas_ta as ta
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from models import MarketMetrics, OrderBookInfo
 from src.config import OHLCV_FETCH_MAX_WORKERS, TIMEFRAME_SETTINGS
 from src.models import MarketDataSnapshot, MarketMetrics
 
@@ -27,6 +30,52 @@ from src.models import MarketDataSnapshot, MarketMetrics
 class AccountOverview:
     balances: Balances
     positions: List[Position]
+
+def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    high, low, close = df["high"], df["low"], df["close"]
+
+    adx_df = ta.adx(high, low, close, length=14)
+    df["adx_14"] = adx_df["ADX_14"]
+
+    df["atr_14"] = ta.atr(high, low, close, length=14)
+    df["natr_14"] = df["atr_14"] / close
+
+    bbands = ta.bbands(close, length=20, std=2.0)
+
+    df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
+    df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
+    df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
+
+    return df
+
+BaseRegime = Literal["trend", "range", "mixed", "unknown"]
+
+def classify_trend_range(df: pd.DataFrame) -> tuple[BaseRegime, Optional[float]]:
+    """
+    Regime: Trend / Range / Mixed
+    逻辑语义：
+    - ADX 高 → 有趋势
+    - ADX 低 → 无趋势（震荡）
+    - 中间 → 混合
+    """
+    if df is None or "adx_14" not in df.columns:
+        return "unknown", None
+
+    s = df["adx_14"].dropna()
+    if len(s) < 50:          # ← 唯一一个“概念级保护”
+        return "unknown", None
+
+    adx = float(s.iloc[-1])
+
+    if adx >= 25:
+        return "trend", adx
+    elif adx <= 18:
+        return "range", adx
+    else:
+        return "mixed", adx
+
 
 
 def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
@@ -182,70 +231,8 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnapshot:
-    """
-    获取指定交易对的多周期（1m / 1h / 4h / 1d / 1w）K线、行情、资金费率、盘口等信息，供策略分析使用。
-    """
-    #
-    # snapshot: Dict[str, Any] = {"symbol": symbol, "timeframe": "1h"}
-    #
-    # # ticker = fetch_ticker(exchange, symbol)
-    # snapshot["ticker"] = ticker or {}
 
-    ticker: Dict[str, Any]
-    try:
-        ticker = exchange.fetch_ticker(symbol)
-    except Exception:
-        ticker = {}
-    ohlcv_map: Dict[str, List[List[float]]] = {}
-    df_map: Dict[str, pd.DataFrame] = {}
-
-    # 多周期拉取（timeframe -> K线条数）
-    #
-    # 为什么适合并发：
-    # - fetch_ohlcv 是网络 I/O（等待交易所响应），线程并发能显著降低总耗时。
-    # 为什么限制并发：
-    # - 交易所可能限频；
-    # - 部分 ccxt 交易所适配器对同一个 exchange 实例并发调用不一定完全线程安全。
-    def _fetch_one(tf: str, limit: int) -> tuple[str, Optional[List[List[float]]]]:
-        try:
-            data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
-            return tf, data
-        except Exception:
-            return tf, None
-
-    with ThreadPoolExecutor(max_workers=OHLCV_FETCH_MAX_WORKERS) as pool:
-        futures = [
-            pool.submit(_fetch_one, timeframe, cfg.limit) for timeframe, cfg in TIMEFRAME_SETTINGS.items()
-        ]
-        for fut in as_completed(futures):
-            timeframe, data = fut.result()
-            if not data:
-                continue
-            ohlcv_map[timeframe] = data
-            df = ohlcv_to_df(data)
-            df = compute_technical_factors(df)
-            df_map[timeframe] = df
-    # --- derivatives metrics ---
-    funding_info = exchange.fetch_funding_rate(symbol)
-    funding_rate = funding_info.get("fundingRate")
-    # {'baseVolume': None, 'datetime': None,
-    #  'info': {'baseId': 0, 'dayBaseVlm': '49885.98866', 'dayNtlVlm': '4574544356.8517580032', 'funding': '0.0000125',
-    #           'impactPxs': ['89804.0', '89833.0'], 'marginTableId': '56', 'markPx': '89842.0', 'maxLeverage': '40',
-    #           'midPx': '89818.5', 'name': 'BTC', 'openInterest': '21528.52084', 'oraclePx': '89875.0',
-    #           'premium': '-0.0004673157', 'prevDayPx': '92026.0', 'szDecimals': '5'}, 'openInterestAmount': 21528.52084,
-    #  'openInterestValue': None, 'quoteVolume': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': None}
-    interest = exchange.fetch_open_interest(symbol)
-
-    # {'asks': [[89768.0, 14.26363], [89769.0, 1.80097], [89770.0, 1.72654], [89771.0, 2.22226], [89772.0, 2.57124],
-    #           [89773.0, 2.1163], [89774.0, 0.41978], [89775.0, 3.66434], [89776.0, 0.62151], [89777.0, 0.2443],
-    #           [89778.0, 2.33257], [89779.0, 1.99476], [89780.0, 1.27619], [89781.0, 0.24205], [89782.0, 0.26265],
-    #           [89783.0, 4.10493], [89784.0, 3.88559], [89785.0, 6.32247], [89786.0, 1.48073], [89787.0, 7.17681]],
-    #  'bids': [[89767.0, 1.11978], [89766.0, 0.00026], [89765.0, 0.0336], [89764.0, 0.00013], [89763.0, 0.00027],
-    #           [89762.0, 0.11225], [89761.0, 0.2229], [89760.0, 0.00013], [89759.0, 0.44587], [89758.0, 1.15676],
-    #           [89757.0, 0.25449], [89756.0, 0.45221], [89755.0, 0.27143], [89754.0, 3.71832], [89753.0, 0.93806],
-    #           [89752.0, 0.9379], [89751.0, 2.0736], [89750.0, 1.20233], [89749.0, 1.34698], [89748.0, 1.03358]],
-    #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
+def fetch_order_book_info(exchange: hyperliquid,symbol: str) -> OrderBookInfo:
     order_book = exchange.fetch_order_book(symbol, limit=100)
 
     spread = None
@@ -273,10 +260,7 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnap
         # 盘口数据是“锦上添花”，不让它影响主流程
         pass
 
-    metrics_obj = MarketMetrics(
-        ticker=ticker,
-        funding_rate=float(funding_rate) if funding_rate is not None else None,
-        open_interest=interest,
+    metrics_obj = OrderBookInfo(
         order_book=order_book,
         spread=float(spread) if spread is not None else None,
         spread_bps=float(spread_bps) if spread_bps is not None else None,
@@ -284,8 +268,7 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnap
         order_book_ask_depth=float(ask_depth) if ask_depth is not None else None,
         order_book_imbalance=float(imbalance) if imbalance is not None else None,
     )
-
-    return MarketDataSnapshot(symbol=symbol, ohlcv=ohlcv_map, ohlcv_df=df_map, metrics=metrics_obj)
+    return metrics_obj
 
 
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:

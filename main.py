@@ -17,9 +17,10 @@ def main() -> None:
     """
     try:
         exchange = create_exchange()
-        while True:
-            start_trade(exchange)
-            time.sleep(LOOP_SECONDS)
+        start_trade(exchange)
+        # while True:
+        #
+        #     time.sleep(LOOP_SECONDS)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")
         sys.exit(0)

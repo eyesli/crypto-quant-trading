@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ccxt
 
+from market_data import fetch_order_book_info
 from src.execution import execute_trade_plan
-from src.market_data import fetch_account_overview, fetch_market_data
+from src.market_data import fetch_account_overview, ohlcv_to_df, add_regime_indicators, \
+    classify_trend_range
 from src.models import ExecutionConfig, StrategyConfig, MarketDataSnapshot, TradePlan
-from src.strategy import generate_trade_plan
-
+from src.strategy import generate_trade_plan, classify_vol_state, decide_regime_with_no_trade
 
 # =========================
 # 直接硬编码配置（按你的要求）
@@ -37,11 +38,25 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
         post_only=POST_ONLY,
     )
 
-    account_overview = fetch_account_overview(exchange)
-    market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
+    # account_overview = fetch_account_overview(exchange)
+    # market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
 
-    exchange.fetch_ohlcv(SYMBOL, "1h", limit=500)
-    decide_regime();
-    plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
-    print(plan.score)
+    data = exchange.fetch_ohlcv(SYMBOL, "1h", limit=500)
+    df = ohlcv_to_df(data)
+    indicators = add_regime_indicators(df)
+    base, adx = classify_trend_range(indicators)
+    vol_state, vol_dbg = classify_vol_state(indicators)
+    order_book = fetch_order_book_info(exchange,SYMBOL)
+    regime = decide_regime_with_no_trade(base, adx, vol_state, order_book.spread_bps,12)
+
+
+    # funding_info = exchange.fetch_funding_rate(SYMBOL)
+    # funding_rate = funding_info.get("fundingRate")
+    # interest = exchange.fetch_open_interest(SYMBOL)
+
+    print("🧭 regime:", regime)
+
+    # decide_regime();
+    # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
+    # print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)

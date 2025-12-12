@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 from pprint import pformat
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Literal
 
 import pandas as pd
 
 from src.config import TIMEFRAME_SETTINGS
-from src.market_data import AccountOverview
+from src.market_data import AccountOverview, BaseRegime
 from src.models import (
     MarketDataSnapshot,
     BreakoutSignal,
@@ -742,62 +742,201 @@ def _entry_trigger_1m(df_1m: Optional[pd.DataFrame]) -> Tuple[bool, bool]:
     return bool(long_trigger), bool(short_trigger)
 
 
-def decide_regime(df_1h: pd.DataFrame, df_4h: pd.DataFrame, metrics) -> dict:
-    base, adx = classify_trend_range(df_1h)
-    if base == "mixed":
-        base2, adx2 = classify_trend_range(df_4h)
-        if base2 != "mixed":
-            base, adx = base2, adx2
+# def decide_regime(df_1h: pd.DataFrame, df_4h: pd.DataFrame, metrics) -> dict:
+#     base, adx = classify_trend_range(df_1h)
+#     if base == "mixed":
+#         base2, adx2 = classify_trend_range(df_4h)
+#         if base2 != "mixed":
+#             base, adx = base2, adx2
+#
+#     vol_state, vol_dbg = classify_vol_state(df_1h)  # 优先 1h 波动状态
+#
+#     spread_bps = float(getattr(metrics, "spread_bps", 0.0) or 0.0)
+#
+#     # no-trade rules
+#     nt, reason = is_no_trade_high_cost(vol_state, spread_bps, max_spread_bps=15)
+#     if nt:
+#         return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
+#                 "allow_mean_reversion": False, "risk_scale": 0.0,
+#                 "reason": reason, "debug": {"adx": adx, **vol_dbg}}
+#
+#     nt, reason = is_no_trade_chop(base, vol_state)
+#     if nt:
+#         return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
+#                 "allow_mean_reversion": False, "risk_scale": 0.0,
+#                 "reason": reason, "debug": {"adx": adx, **vol_dbg}}
+#
+#     # allow flags
+#     allow_trend = base in ("trend", "mixed") and vol_state != "low"
+#     allow_mean_rev = base in ("range", "mixed") and vol_state != "high"
+#
+#     # risk scale
+#     risk_scale = 0.7 if vol_state == "high" else 1.2 if vol_state == "low" else 1.0
+#
+#     return {"regime": base, "base": base, "vol_state": vol_state,
+#             "allow_trend": allow_trend, "allow_mean_reversion": allow_mean_rev,
+#             "risk_scale": risk_scale,
+#             "reason": f"ADX={adx:.1f}, vol={vol_state}, spread={spread_bps:.1f}bps",
+#             "debug": {"adx": adx, **vol_dbg}}
 
-    vol_state, vol_dbg = classify_vol_state(df_1h)  # 优先 1h 波动状态
+VolState = Literal["low", "normal", "high", "unknown"]
 
-    spread_bps = float(getattr(metrics, "spread_bps", 0.0) or 0.0)
-
-    # no-trade rules
-    nt, reason = is_no_trade_high_cost(vol_state, spread_bps, max_spread_bps=15)
-    if nt:
-        return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
-                "allow_mean_reversion": False, "risk_scale": 0.0,
-                "reason": reason, "debug": {"adx": adx, **vol_dbg}}
-
-    nt, reason = is_no_trade_chop(base, vol_state)
-    if nt:
-        return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
-                "allow_mean_reversion": False, "risk_scale": 0.0,
-                "reason": reason, "debug": {"adx": adx, **vol_dbg}}
-
-    # allow flags
-    allow_trend = base in ("trend", "mixed") and vol_state != "low"
-    allow_mean_rev = base in ("range", "mixed") and vol_state != "high"
-
-    # risk scale
-    risk_scale = 0.7 if vol_state == "high" else 1.2 if vol_state == "low" else 1.0
-
-    return {"regime": base, "base": base, "vol_state": vol_state,
-            "allow_trend": allow_trend, "allow_mean_reversion": allow_mean_rev,
-            "risk_scale": risk_scale,
-            "reason": f"ADX={adx:.1f}, vol={vol_state}, spread={spread_bps:.1f}bps",
-            "debug": {"adx": adx, **vol_dbg}}
-
-
-def classify_vol_state(df: pd.DataFrame, col_candidates=("natr_14", "bb_width"),
-                       lookback=200, q_low=0.2, q_high=0.8) -> tuple[str, dict]:
-    col = next((c for c in col_candidates if c in df.columns and df[c].notna().sum() >= 60), None)
-    if not col:
-        return "unknown", {"col": None}
-
-    s = df[col].dropna()
-    w = s.iloc[-lookback:] if len(s) >= lookback else s
-    cur = float(w.iloc[-1])
-    p20 = float(w.quantile(q_low))
-    p80 = float(w.quantile(q_high))
-
+def _q_state(cur: float, p20: float, p80: float) -> VolState:
     if cur <= p20:
-        return "low", {"col": col, "cur": cur, "p20": p20, "p80": p80}
+        return "low"
     if cur >= p80:
-        return "high", {"col": col, "cur": cur, "p20": p20, "p80": p80}
-    return "normal", {"col": col, "cur": cur, "p20": p20, "p80": p80}
+        return "high"
+    return "normal"
 
+def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
+    """
+    波动状态（Regime 子模块）：
+    - 用 NATR + BB Width 两个“独立波动视角”做一致性判定
+    - 输出 low/normal/high，用于策略许可与风险缩放
+    """
+    if df is None or "natr_14" not in df.columns or "bb_width" not in df.columns:
+        return "unknown", {}
+
+    natr = df["natr_14"].dropna()
+    bbw = df["bb_width"].dropna()
+    if len(natr) < 200 or len(bbw) < 200:
+        return "unknown", {}
+
+    # 统一取近端窗口（大约一周+）
+    w_natr = natr.iloc[-200:]
+    w_bbw = bbw.iloc[-200:]
+
+    n_cur = float(w_natr.iloc[-1])
+    n_p20 = float(w_natr.quantile(0.2))
+    n_p80 = float(w_natr.quantile(0.8))
+    n_state = _q_state(n_cur, n_p20, n_p80)
+
+    b_cur = float(w_bbw.iloc[-1])
+    b_p20 = float(w_bbw.quantile(0.2))
+    b_p80 = float(w_bbw.quantile(0.8))
+    b_state = _q_state(b_cur, b_p20, b_p80)
+
+    # 一致性判定：两者一致 → 置信度高
+    if n_state == b_state:
+        final = n_state
+        conf = "high"
+    else:
+        # 冲突时：保守策略 —— 视为 normal/mixed（不要极端化）
+        final = "normal"
+        conf = "low"
+
+    dbg = {
+        "final": final,
+        "confidence": conf,
+        "natr": {"cur": n_cur, "p20": n_p20, "p80": n_p80, "state": n_state},
+        "bbw": {"cur": b_cur, "p20": b_p20, "p80": b_p80, "state": b_state},
+    }
+    return final, dbg
+
+def decide_regime_with_no_trade(
+    base: BaseRegime,
+    adx: Optional[float],
+    vol_state: VolState,
+    spread_bps: Optional[float],
+    max_spread_bps  # BTC 永续常用过滤线（你可以回测再调）
+) -> Dict[str, Any]:
+    # -------------------------
+    # 1) Hard No-Trade：直接禁开仓
+    # -------------------------
+    hard_reasons = []
+
+    if base == "unknown" or vol_state == "unknown":
+        hard_reasons.append("regime unknown (data/indicators insufficient)")
+
+    if spread_bps is not None and spread_bps > max_spread_bps:
+        hard_reasons.append(f"spread too wide ({spread_bps:.1f}bps > {max_spread_bps:.1f}bps)")
+
+    hard_no_trade = len(hard_reasons) > 0
+
+    # -------------------------
+    # 2) Soft No-Trade：允许管理仓位，但禁“新开仓”
+    # -------------------------
+    soft_reasons = []
+
+    # 高波动：均值回归禁；趋势可做但降风险
+    if vol_state == "high" and base in ("range", "mixed"):
+        soft_reasons.append("high vol + (range/mixed): mean reversion likely to get wicked")
+
+    # 低波动：趋势突破禁；均值可做但需更严格触发
+    if vol_state == "low" and base in ("trend", "mixed"):
+        soft_reasons.append("low vol + (trend/mixed): breakouts often fail (compression noise)")
+
+    soft_no_trade = (not hard_no_trade) and (len(soft_reasons) > 0)
+
+    # -------------------------
+    # 3) 许可矩阵 + 风险缩放
+    # -------------------------
+    allow_trend = base in ("trend", "mixed")
+    allow_mean = base in ("range", "mixed")
+
+    # vol_state 对策略许可的覆盖
+    if vol_state == "low":
+        allow_trend = False
+    if vol_state == "high":
+        allow_mean = False
+
+    # 风险缩放
+    if vol_state == "high":
+        risk_scale = 0.6
+        cooldown_scale = 2.0
+    elif vol_state == "low":
+        risk_scale = 0.8
+        cooldown_scale = 1.5
+    else:
+        risk_scale = 1.0
+        cooldown_scale = 1.0
+
+    # hard 禁：完全禁止新开仓（你也可以直接 return）
+    if hard_no_trade:
+        return {
+            "regime": "no_trade",
+            "base": base,
+            "adx": adx,
+            "vol_state": vol_state,
+            "hard_no_trade": True,
+            "soft_no_trade": False,
+            "allow_trend": False,
+            "allow_mean": False,
+            "risk_scale": 0.0,
+            "cooldown_scale": 2.0,
+            "reason": " | ".join(hard_reasons),
+        }
+
+    # soft 禁：禁止新开仓，但允许管理仓位（平仓、减仓、移动止损）
+    if soft_no_trade:
+        return {
+            "regime": "soft_no_trade",
+            "base": base,
+            "adx": adx,
+            "vol_state": vol_state,
+            "hard_no_trade": False,
+            "soft_no_trade": True,
+            "allow_trend": allow_trend,
+            "allow_mean": allow_mean,
+            "risk_scale": risk_scale,
+            "cooldown_scale": cooldown_scale,
+            "reason": " | ".join(soft_reasons),
+        }
+
+    # 正常可交易
+    return {
+        "regime": base,
+        "base": base,
+        "adx": adx,
+        "vol_state": vol_state,
+        "hard_no_trade": False,
+        "soft_no_trade": False,
+        "allow_trend": allow_trend,
+        "allow_mean": allow_mean,
+        "risk_scale": risk_scale,
+        "cooldown_scale": cooldown_scale,
+        "reason": f"base={base}, adx={adx}, vol={vol_state}",
+    }
 
 def is_no_trade_high_cost(vol_state: str, spread_bps: float, max_spread_bps=15) -> tuple[bool, str]:
     if vol_state == "high" and spread_bps > max_spread_bps:
@@ -809,10 +948,4 @@ def is_no_trade_chop(base: str, vol_state: str) -> tuple[bool, str]:
         return True, "NO_TRADE: range + low vol (chop)"
     return False, ""
 
-def classify_trend_range(df: pd.DataFrame) -> tuple[str, float]:
-    adx = float(df["adx_14"].dropna().iloc[-1]) if "adx_14" in df.columns and df["adx_14"].notna().any() else 0.0
-    if adx >= 25:
-        return "trend", adx
-    if 0 < adx <= 18:
-        return "range", adx
-    return "mixed", adx
+
