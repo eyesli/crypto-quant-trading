@@ -1,11 +1,24 @@
 """
 交易所连接管理函数
 负责创建交易所实例和检查连接
+
+⚠️ 安全说明：
+- 你要求“直接硬编码”，我按需实现了。
+- 强烈建议：不要把真实私钥提交到 git 仓库；最好只在本机/私有环境使用。
 """
 
-import ccxt
+from __future__ import annotations
+
 import sys
 from typing import Optional
+
+import ccxt
+
+# =========================
+# 直接硬编码配置（按你的要求）
+# =========================
+HL_WALLET_ADDRESS = "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D"
+HL_PRIVATE_KEY = "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0"
 
 
 # PROXY = "http://127.0.0.1:7890"
@@ -13,25 +26,22 @@ from typing import Optional
 def create_exchange() -> ccxt.hyperliquid:
     """
     创建交易所实例
-
-    Args:
-        api_key: API密钥
-        api_secret: API密钥
-        api_password: API密码（OKX特有）
-        proxy: 代理地址
-
-    Returns:
-        ccxt.okx: 交易所实例
     """
     try:
+        if not HL_WALLET_ADDRESS or not HL_PRIVATE_KEY:
+            raise RuntimeError("缺少 HL_WALLET_ADDRESS / HL_PRIVATE_KEY（请在代码里填写）")
 
-        exchange = ccxt.hyperliquid({
-            "walletAddress": "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D",  # /!\ Public address of your account/wallet
-            "privateKey": "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0",  # Private key from the API wallet
-            'options': {
-                'defaultType': 'swap',  # 1. 确保是合约模式
+        exchange = ccxt.hyperliquid(
+            {
+                "walletAddress": HL_WALLET_ADDRESS,  # public address
+                "privateKey": HL_PRIVATE_KEY,  # private key from API wallet
+                "options": {
+                    "defaultType": "swap",  # 合约模式
+                },
+                "enableRateLimit": True,
+                "timeout": 30000,
             }
-        })
+        )
 
         # exchange = ccxt.okx({
         #     "apiKey": API_KEY,

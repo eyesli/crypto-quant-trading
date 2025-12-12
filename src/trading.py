@@ -1,8 +1,8 @@
-from typing import Any, Optional, Dict, Literal
+from __future__ import annotations
+
+from typing import Any, Dict, Literal, Optional
+
 import ccxt
-
-
-from typing import Any
 
 def open_perp_limit_position(
     exchange: ccxt.hyperliquid,
@@ -67,12 +67,13 @@ def open_perp_limit_position(
         else:  # SHORT
             price_diff = stop_loss - limit_price
 
+        amount: float
         if price_diff <= 0:
-            print("⚠️ 止损价与限价不合理，使用固定名义仓位比例代替。")
-            stop_loss = None
-        else:
-            # 假设按止损价离限价这么多空间来计算：亏损 = 仓位数量 * 价格差
-            amount = max_loss / price_diff
+            print("⚠️ 止损价与限价不合理：无法用风险定仓。请提供合理 stop_loss。")
+            return None
+
+        # 假设按止损价离限价这么多空间来计算：亏损 = 仓位数量 * 价格差
+        amount = max_loss / price_diff
         if amount <= 0:
             print("⚠️ 计算得到的仓位数量 <= 0，取消开仓。")
             return None
@@ -97,7 +98,7 @@ def open_perp_limit_position(
             symbol=symbol,
             type="limit",
             side=side,
-            amount=10,
+            amount=amount,
             price=limit_price,
             params={
                 # 有些 ccxt 交易所支持：

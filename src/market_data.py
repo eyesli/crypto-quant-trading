@@ -178,6 +178,10 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
         "timeframes": {},
         "metrics": {},
     }
+    try:
+        snapshot["metrics"]["ticker"] = exchange.fetch_ticker(symbol)
+    except Exception:
+        snapshot["metrics"]["ticker"] = {}
     ohlcv_map: Dict[str, List[List[float]]] = {}
     df_map: Dict[str, pd.DataFrame] = {}
 
@@ -192,9 +196,9 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     snapshot["timeframes"]["ohlcv"] = ohlcv_map
     snapshot["timeframes"]["ohlcv_df"] = df_map
 
+    # --- derivatives metrics ---
     funding_info = exchange.fetch_funding_rate(symbol)
-    # 1.25e-05
-    funding_rate = funding_info.get("fundingRate")
+    snapshot["metrics"]["funding_rate"] = funding_info.get("fundingRate")
     # {'baseVolume': None, 'datetime': None,
     #  'info': {'baseId': 0, 'dayBaseVlm': '49885.98866', 'dayNtlVlm': '4574544356.8517580032', 'funding': '0.0000125',
     #           'impactPxs': ['89804.0', '89833.0'], 'marginTableId': '56', 'markPx': '89842.0', 'maxLeverage': '40',
@@ -202,6 +206,7 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     #           'premium': '-0.0004673157', 'prevDayPx': '92026.0', 'szDecimals': '5'}, 'openInterestAmount': 21528.52084,
     #  'openInterestValue': None, 'quoteVolume': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': None}
     interest = exchange.fetch_open_interest(symbol)
+    snapshot["metrics"]["open_interest"] = interest
 
     # {'asks': [[89768.0, 14.26363], [89769.0, 1.80097], [89770.0, 1.72654], [89771.0, 2.22226], [89772.0, 2.57124],
     #           [89773.0, 2.1163], [89774.0, 0.41978], [89775.0, 3.66434], [89776.0, 0.62151], [89777.0, 0.2443],
@@ -213,6 +218,28 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     #           [89752.0, 0.9379], [89751.0, 2.0736], [89750.0, 1.20233], [89749.0, 1.34698], [89748.0, 1.03358]],
     #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
     order_book = exchange.fetch_order_book(symbol, limit=100)
+    snapshot["metrics"]["order_book"] = order_book
+
+    # --- microstructure (lightweight) ---
+    try:
+        bids = order_book.get("bids") or []
+        asks = order_book.get("asks") or []
+        best_bid = float(bids[0][0]) if bids else None
+        best_ask = float(asks[0][0]) if asks else None
+        if best_bid and best_ask and best_ask > 0:
+            snapshot["metrics"]["spread"] = best_ask - best_bid
+            snapshot["metrics"]["spread_bps"] = (best_ask - best_bid) / best_ask * 10_000
+
+        depth_levels = 20
+        bid_depth = sum(float(px_qty[1]) for px_qty in bids[:depth_levels]) if bids else 0.0
+        ask_depth = sum(float(px_qty[1]) for px_qty in asks[:depth_levels]) if asks else 0.0
+        denom = bid_depth + ask_depth
+        snapshot["metrics"]["order_book_bid_depth"] = bid_depth
+        snapshot["metrics"]["order_book_ask_depth"] = ask_depth
+        snapshot["metrics"]["order_book_imbalance"] = (bid_depth - ask_depth) / denom if denom else 0.0
+    except Exception:
+        # 盘口数据是“锦上添花”，不让它影响主流程
+        pass
 
     return snapshot
 
