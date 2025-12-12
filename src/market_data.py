@@ -1,6 +1,10 @@
 """
 市场数据获取函数
 负责获取实时价格、K线数据等市场信息
+
+性能说明：
+- 多周期 OHLCV 拉取是典型网络 I/O，可用线程池并发加速。
+- 但并发也可能触发限频或暴露交易所适配的“线程不安全”问题，默认使用小并发。
 """
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,7 +18,9 @@ import math
 import pandas as pd
 import pandas_ta as ta
 
-from src.config import TIMEFRAME_SETTINGS
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from src.config import OHLCV_FETCH_MAX_WORKERS, TIMEFRAME_SETTINGS
 from src.models import MarketDataSnapshot, MarketMetrics
 
 @dataclass
@@ -195,14 +201,31 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnap
     df_map: Dict[str, pd.DataFrame] = {}
 
     # 多周期拉取（timeframe -> K线条数）
-    for timeframe, cfg in TIMEFRAME_SETTINGS.items():
-        data = exchange.fetch_ohlcv(symbol, timeframe, limit=cfg.limit)
-        if not data:
-            continue
-        ohlcv_map[timeframe] = data
-        df = ohlcv_to_df(data)
-        df = compute_technical_factors(df)
-        df_map[timeframe] = df
+    #
+    # 为什么适合并发：
+    # - fetch_ohlcv 是网络 I/O（等待交易所响应），线程并发能显著降低总耗时。
+    # 为什么限制并发：
+    # - 交易所可能限频；
+    # - 部分 ccxt 交易所适配器对同一个 exchange 实例并发调用不一定完全线程安全。
+    def _fetch_one(tf: str, limit: int) -> tuple[str, Optional[List[List[float]]]]:
+        try:
+            data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+            return tf, data
+        except Exception:
+            return tf, None
+
+    with ThreadPoolExecutor(max_workers=OHLCV_FETCH_MAX_WORKERS) as pool:
+        futures = [
+            pool.submit(_fetch_one, timeframe, cfg.limit) for timeframe, cfg in TIMEFRAME_SETTINGS.items()
+        ]
+        for fut in as_completed(futures):
+            timeframe, data = fut.result()
+            if not data:
+                continue
+            ohlcv_map[timeframe] = data
+            df = ohlcv_to_df(data)
+            df = compute_technical_factors(df)
+            df_map[timeframe] = df
     # --- derivatives metrics ---
     funding_info = exchange.fetch_funding_rate(symbol)
     funding_rate = funding_info.get("fundingRate")

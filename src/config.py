@@ -53,4 +53,15 @@ TIMEFRAME_SETTINGS: Final[dict[str, TimeframeSetting]] = {
 }
 
 
+# =========================
+# Data fetching performance
+# =========================
+# 是否并发拉取多周期 OHLCV（K线）。
+# - 优点：网络 I/O 并发，整体速度更快（多周期延迟不再串行叠加）
+# - 风险：部分交易所/适配器对“同一个 exchange 实例多线程并发请求”不一定完全线程安全；
+#         并发也可能更容易触发限频（Rate Limit）。
+# 建议：先用小并发（2~3），稳定后再逐步加。
+OHLCV_FETCH_MAX_WORKERS: Final[int] = 3
+
+
 
