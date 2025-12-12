@@ -5,126 +5,218 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List
-from typing import Optional, Dict
-from typing import Dict, Any
 from ccxt.base.types import Position, Balances
 import ccxt
 
+from typing import Any, Optional, Dict
 
-## balance = exchange.fetch_balance()
+import math
+import pandas as pd
+import pandas_ta as ta
+
 @dataclass
 class AccountOverview:
     balances: Balances
     positions: List[Position]
 
-def fetch_ticker(exchange: ccxt.hyperliquid, symbol: str) -> Optional[Dict]:
+
+def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     """
-    获取交易对的最新行情（带完整判空 + 字段保护）
-
-    Args:
-        exchange: 交易所实例
-        symbol: 交易对符号，如 "BTC/USDT"
-
-    Returns:
-        dict: 行情数据，失败返回 None
+    将 ccxt 返回的 ohlcv 列表转换为 pandas DataFrame：
+    columns = [timestamp, open, high, low, close, volume]
     """
-    try:
-        print(f"\n📊 正在获取 {symbol} 行情...")
-        ticker = exchange.fetch_ticker(symbol)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("timestamp", inplace=True)
+    return df
 
-        # -------- 判空 --------
-        if not ticker or not isinstance(ticker, dict):
-            print("⚠️ 未获取到有效 ticker 数据")
-            return None
-        last = ticker.get("last")
-        print("\n" + "=" * 60)
-        print(f"📈 {symbol} 实时行情")
-        print(f"最新价格:    ${last:,.2f}")
-        print("=" * 60 + "\n")
-
-        return ticker
-
-    except ccxt.NetworkError as e:
-        print(f"❌ 网络错误: {e}")
-    except ccxt.ExchangeError as e:
-        print(f"❌ 交易所错误: {e}")
-    except Exception as e:
-        print(f"❌ 获取行情失败: {e}")
-
-    return None
-
-
-def fetch_ohlcv(exchange: ccxt.hyperliquid, symbol: str, timeframe: str, limit: int) -> Optional[List]:
+def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     """
-    获取K线数据
-
-    Args:
-        exchange: 交易所实例
-        symbol: 交易对符号
-        timeframe: 时间周期，如 "1m", "5m", "1h", "1d"
-        limit: 获取的K线数量
-
-    Returns:
-        list: K线数据列表，失败返回 None
+    在 df 上追加各种技术指标列，使用 pandas_ta。
+    你可以按需删减或扩展。
     """
-    try:
-        print(f"\n📉 正在获取 {symbol} {timeframe} K线数据（最近 {limit} 根）...")
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
 
-        if not ohlcv:
-            print("⚠️  未获取到K线数据")
-            return None
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"]
 
-        print(f"\n{'=' * 80}")
-        print(f"📊 {symbol} {timeframe} K线数据")
-        print(f"{'=' * 80}")
-        print(f"{'时间':<20} {'开盘':<12} {'最高':<12} {'最低':<12} {'收盘':<12} {'成交量':<15}")
-        print("-" * 80)
+    # ===== 1. 趋势与动量因子 =====
+    df["sma_50"] = ta.sma(close, length=50)
+    df["ema_50"] = ta.ema(close, length=50)
+    df["wma_50"] = ta.wma(close, length=50)
 
-        for candle in ohlcv:
-            timestamp = datetime.fromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-            open_price = candle[1]
-            high_price = candle[2]
-            low_price = candle[3]
-            close_price = candle[4]
-            volume = candle[5]
+    macd = ta.macd(close)
+    df["macd"] = macd["MACD_12_26_9"]
+    df["macd_signal"] = macd["MACDs_12_26_9"]
+    df["macd_hist"] = macd["MACDh_12_26_9"]
 
-            print(f"{timestamp:<20} ${open_price:<11,.2f} ${high_price:<11,.2f} "
-                  f"${low_price:<11,.2f} ${close_price:<11,.2f} {volume:<15,.2f}")
+    df["roc_10"] = ta.roc(close, length=10)
+    df["mom_10"] = ta.mom(close, length=10)
+    df["rsi_14"] = ta.rsi(close, length=14)
+    df["adx_14"] = ta.adx(high, low, close, length=14)["ADX_14"]
 
-        print(f"{'=' * 80}\n")
+    # Breakout 简单标记：收盘价创新 N 日新高/新低
+    lookback = 20
+    df["n_high"] = close.rolling(lookback).max()
+    df["n_low"] = close.rolling(lookback).min()
+    df["breakout_up"] = (close >= df["n_high"]).astype(int)
+    df["breakout_down"] = (close <= df["n_low"]).astype(int)
 
-        return ohlcv
-    except ccxt.NetworkError as e:
-        print(f"❌ 网络错误: {e}")
-        return None
-    except ccxt.ExchangeError as e:
-        print(f"❌ 交易所错误: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ 获取K线数据失败: {e}")
-        return None
+    # ===== 2. 均值回归因子 =====
+    bbands = ta.bbands(close, length=20, std=2.0)
 
-from typing import Any
+    df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
+    df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
+    df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
 
-def _format_chinese_number(num: float) -> str:
-    """
-    简单的中文数字格式化：
-      12345    -> 1.23万
-      12345678 -> 1234.57万
-      123456789 -> 1.23亿
-    用于打印余额、仓位名义价值等。
-    """
-    abs_num = abs(num)
-    if abs_num >= 1_0000_0000:
-        return f"{num / 1_0000_0000:.2f}亿"
-    elif abs_num >= 10_000:
-        return f"{num / 10_000:.2f}万"
+    # Keltner Channel
+    kelt = ta.kc(high, low, close, length=20)
+    df["kc_mid"] = kelt["KCBe_20_2"]
+    df["kc_upper"] = kelt["KCUe_20_2"]
+    df["kc_lower"] = kelt["KCLe_20_2"]
+
+    # VWAP（通常用在 intraday，这里直接算一版）
+    df["vwap"] = ta.vwap(high, low, close, vol)
+
+    # ---- AVWAP：从整段数据起点锚定的成交量加权成本线 ----
+    cum_pv = (close * vol).cumsum()
+    cum_vol = vol.cumsum()
+    df["avwap_full"] = cum_pv / cum_vol   # 越靠后越稳定，可看作“大资金平均成本”
+
+    # Z-Score（价格相对滚动均值的偏离）
+    mean_20 = close.rolling(20).mean()
+    std_20 = close.rolling(20).std()
+    df["zscore_20"] = (close - mean_20) / std_20
+
+    # Williams %R
+    df["williams_r"] = ta.willr(high, low, close, length=14)
+
+    # ===== 3. 波动率因子 =====
+    df["atr_14"] = ta.atr(high, low, close, length=14)
+    # NATR = ATR / close
+    df["natr_14"] = df["atr_14"] / close
+
+    # Historical Vol（简单用 log_return 的 std）
+    log_ret = (close / close.shift(1)).apply(lambda x: math.log(x) if x > 0 else 0)
+    df["hv_20"] = log_ret.rolling(20).std()
+
+    # HV Ratio：当前 HV vs 长周期 HV
+    df["hv_100"] = log_ret.rolling(100).std()
+    df["hv_ratio"] = df["hv_20"] / df["hv_100"]
+
+    # Skew / Kurtosis（滚动）
+    df["ret_skew_50"] = log_ret.rolling(50).skew()
+    df["ret_kurt_50"] = log_ret.rolling(50).kurt()
+
+    # ===== 4. 价量结构因子 =====
+    # Volume Spike：相对过去 N 根的倍数
+    vol_ma_20 = vol.rolling(20).mean()
+    df["vol_spike_ratio"] = vol / vol_ma_20
+
+    # OBV
+    df["obv"] = ta.obv(close, vol)
+
+    # HH/HL 结构简单判断：当前高点是否超过前 N 高点
+    swing_lookback = 5
+    df["swing_high"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
+    df["swing_low"] = low[(low.shift(1) > low) & (low.shift(-1) > low)]
+
+    # Breakout + Volume：同时突破 + 放量
+    df["breakout_up_with_vol"] = (
+        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
+    ).astype(int)
+
+    # ---- Volume Profile + POC（简单整段版）----
+    # 1) 选择价格范围
+    price_min = close.min()
+    price_max = close.max()
+    if price_max > price_min:
+        bins = 30  # 划分 30 档价格区间，你可以按需要改
+        bin_size = (price_max - price_min) / bins
+
+        # 每一根K线属于哪个价格档
+        bin_index = ((close - price_min) / bin_size).astype(int).clip(0, bins - 1)
+
+        # 2) 统计每个价格档的累计成交量
+        vol_profile = vol.groupby(bin_index).sum()
+
+        # 3) 找出成交量最多的那个档位 = POC
+        poc_bin = vol_profile.idxmax()
+        poc_price = float(price_min + (poc_bin + 0.5) * bin_size)  # 档位中点价格
+
+        df["poc_full"] = poc_price
+        df["price_to_poc_pct"] = (close - poc_price) / poc_price
     else:
-        return f"{num:,.2f}"
+        # 价格完全没波动（极端情况），直接置空
+        df["poc_full"] = float("nan")
+        df["price_to_poc_pct"] = float("nan")
 
-def fetch_market_data(exchange):
-    pass
+    return df
+
+def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]:
+    """
+    获取指定交易对的多周期（1m / 1h / 4h / 1d / 1w）K线、行情、资金费率、盘口等信息，供策略分析使用。
+    """
+    #
+    # snapshot: Dict[str, Any] = {"symbol": symbol, "timeframe": "1h"}
+    #
+    # # ticker = fetch_ticker(exchange, symbol)
+    # snapshot["ticker"] = ticker or {}
+
+    timeframe_settings = {
+        "1m": 500,
+        "1h": 200,
+        "4h": 150,
+        "1d": 120,
+        "1w": 104,
+    }
+    snapshot: Dict[str, Any] = {
+        "symbol": symbol,
+        "timeframes": {},
+        "metrics": {},
+    }
+    ohlcv_map: Dict[str, List[List[float]]] = {}
+    df_map: Dict[str, pd.DataFrame] = {}
+
+    for timeframe, limit in timeframe_settings.items():
+        data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        if not data:
+            continue
+        ohlcv_map[timeframe] = data
+        df = ohlcv_to_df(data)
+        df = compute_technical_factors(df)
+        df_map[timeframe] = df
+    snapshot["timeframes"]["ohlcv"] = ohlcv_map
+    snapshot["timeframes"]["ohlcv_df"] = df_map
+
+    funding_info = exchange.fetch_funding_rate(symbol)
+    # 1.25e-05
+    funding_rate = funding_info.get("fundingRate")
+    # {'baseVolume': None, 'datetime': None,
+    #  'info': {'baseId': 0, 'dayBaseVlm': '49885.98866', 'dayNtlVlm': '4574544356.8517580032', 'funding': '0.0000125',
+    #           'impactPxs': ['89804.0', '89833.0'], 'marginTableId': '56', 'markPx': '89842.0', 'maxLeverage': '40',
+    #           'midPx': '89818.5', 'name': 'BTC', 'openInterest': '21528.52084', 'oraclePx': '89875.0',
+    #           'premium': '-0.0004673157', 'prevDayPx': '92026.0', 'szDecimals': '5'}, 'openInterestAmount': 21528.52084,
+    #  'openInterestValue': None, 'quoteVolume': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': None}
+    interest = exchange.fetch_open_interest(symbol)
+
+    # {'asks': [[89768.0, 14.26363], [89769.0, 1.80097], [89770.0, 1.72654], [89771.0, 2.22226], [89772.0, 2.57124],
+    #           [89773.0, 2.1163], [89774.0, 0.41978], [89775.0, 3.66434], [89776.0, 0.62151], [89777.0, 0.2443],
+    #           [89778.0, 2.33257], [89779.0, 1.99476], [89780.0, 1.27619], [89781.0, 0.24205], [89782.0, 0.26265],
+    #           [89783.0, 4.10493], [89784.0, 3.88559], [89785.0, 6.32247], [89786.0, 1.48073], [89787.0, 7.17681]],
+    #  'bids': [[89767.0, 1.11978], [89766.0, 0.00026], [89765.0, 0.0336], [89764.0, 0.00013], [89763.0, 0.00027],
+    #           [89762.0, 0.11225], [89761.0, 0.2229], [89760.0, 0.00013], [89759.0, 0.44587], [89758.0, 1.15676],
+    #           [89757.0, 0.25449], [89756.0, 0.45221], [89755.0, 0.27143], [89754.0, 3.71832], [89753.0, 0.93806],
+    #           [89752.0, 0.9379], [89751.0, 2.0736], [89750.0, 1.20233], [89749.0, 1.34698], [89748.0, 1.03358]],
+    #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
+    order_book = exchange.fetch_order_book(symbol, limit=100)
+
+    return snapshot
+
+
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
     """
     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
@@ -142,9 +234,9 @@ def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
         print("\n" + "=" * 60)
         print("💰 账户余额概览")
         print("=" * 60)
-        print(f"总权益:      {_format_chinese_number(total_usdc)} USDC")
-        print(f"可用余额:    {_format_chinese_number(free_usdc)} USDC")
-        print(f"已用保证金:  {_format_chinese_number(used_usdc)} USDC")
+        print(f"总权益:      {total_usdc} USDC")
+        print(f"可用余额:    {free_usdc} USDC")
+        print(f"已用保证金:  {used_usdc} USDC")
         print("=" * 60 + "\n")
 
         # 2. 获取仓位

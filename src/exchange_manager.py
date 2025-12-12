@@ -56,7 +56,7 @@ def create_exchange() -> ccxt.hyperliquid:
         return exchange
     except Exception as e:
         print(f"❌ 创建交易所实例失败: {e}")
-        sys.exit(1)
+        raise
 
 
 def check_connection(exchange: ccxt.hyperliquid) -> bool:

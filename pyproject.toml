@@ -2,9 +2,11 @@
 name = "crypto-quant-trading"
 version = "0.1.0"
 description = "OKX 交易所数据获取工具 - 结构化的量化交易数据获取系统"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.0.0",
+    "pandas>=2.3.3",
+    "pandas-ta>=0.4.71b0",
     "python-dotenv>=1.0.0",
 ]
 readme = "README.md"
