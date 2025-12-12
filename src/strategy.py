@@ -12,7 +12,19 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from src.market_data import AccountOverview
-from src.models import PositionSide, StrategyConfig, TradePlan
+from src.models import (
+    BreakoutSignal,
+    MomentumSignal,
+    OverheatSignal,
+    PositionSide,
+    StrategyConfig,
+    StructureCostSignal,
+    TechnicalLinesSnapshot,
+    TradePlan,
+    TrendLineSignal,
+    VolatilitySignal,
+    VolumeConfirmationSignal,
+)
 from src.risk import calc_amount_from_risk
 
 
@@ -171,49 +183,32 @@ def generate_trade_plan(
     return TradePlan(symbol=symbol, action="HOLD", reason="持仓中，信号不足以调整", score=score)
 
 
-def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
+def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> TechnicalLinesSnapshot:
     """
     ✅ 只做“技术线分析”，不在这里做总分计算。
-
     这里产出的是“结构化信号/特征”，方便你：
     - 把每条技术线单独可视化/打印
     - 在汇总器里统一调权重/加规则
     - 回测时逐条分析哪条技术线贡献最大
-
-    返回示例字段：
-      {
-        "ok": True/False,
-        "close": float,
-        "adx": float,
-        "trend": {...},
-        "momentum": {...},
-        "breakout": {...},
-        "volatility": {...},
-        "overheat": {...},
-        "volume": {...},
-        "structure": {...},
-        "notes": [str, ...]   # 人类可读解释（不含总分）
-      }
     """
     if df is None or len(df) == 0:
-        return {"ok": False, "notes": ["df 为空"]}
+        return TechnicalLinesSnapshot(ok=False, notes=("df 为空",))
 
     # 只要求 close 必须存在；其他列按“有就用、没有就跳过”
     if "close" not in df.columns:
-        return {"ok": False, "notes": ["缺少 close 列"]}
+        return TechnicalLinesSnapshot(ok=False, notes=("缺少 close 列",))
 
     df2 = df.copy()
     df2 = df2.dropna(subset=["close"])  # 把 close 列为 NaN（缺失值）的那些行删掉
     if len(df2) < 30:
-        return {"ok": False, "notes": ["有效K线太少"]}
+        return TechnicalLinesSnapshot(ok=False, notes=("有效K线太少",))
 
     row = df2.iloc[-1]  # 最后一行（最新一根 K 线/最新一条记录）
     prev = df2.iloc[-2]  # 倒数第二行（上一根 K 线/上一条记录）
 
     close = float(row["close"])
 
-    notes = []
-    out: Dict[str, Any] = {"ok": True, "close": close, "notes": notes}
+    notes: list[str] = []
 
     def has(col: str) -> bool:
         return col in df2.columns and pd.notna(row.get(col))
@@ -227,7 +222,7 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
     # 偏离比例（bias）：相当于把“离均线多远”标准化成百分比，偏离越大通常意味着趋势越强，但也可能更“过热”（所以后面会配合 RSI/波动等做过滤或惩罚）。
     # EMA50 vs SMA50：EMA 更敏感，如果 EMA50 长期在 SMA50 上方，往往意味着“近期价格持续高于中期平均”，是一种趋势确认；反之亦然。
     # -------------------------
-    trend: Dict[str, Any] = {}
+    trend = TrendLineSignal()
     if has("ema_50") and has("sma_50"):
         ema = float(row["ema_50"])
         sma = float(row["sma_50"])
@@ -240,13 +235,13 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
             ema_prev5 = float(df2["ema_50"].iloc[-6])
             ema_slope_5 = (ema - ema_prev5) / ema_prev5 if ema_prev5 else 0.0
 
-        trend = {
-            "ema_50": ema,
-            "sma_50": sma,
-            "bias_to_ema": bias_ema,  # close 相对 EMA50 的偏离比例
-            "ema_gt_sma": ema_gt_sma,
-            "ema_slope_5": ema_slope_5,
-        }
+        trend = TrendLineSignal(
+            ema_50=ema,
+            sma_50=sma,
+            bias_to_ema=bias_ema,  # close 相对 EMA50 的偏离比例
+            ema_gt_sma=ema_gt_sma,
+            ema_slope_5=ema_slope_5,
+        )
         if bias_ema > 0.004:
             notes.append(f"价格在EMA50上方({bias_ema:.2%})")
         elif bias_ema < -0.004:
@@ -258,38 +253,33 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
             elif ema_slope_5 < -0.002:
                 notes.append("EMA50 下行")
 
-    out["trend"] = trend
-
     # -------------------------
     # 2) 动能：MACD 柱体方向 + 变化
     # MACD 柱体可以粗略理解为“短周期动能 - 长周期动能”，柱体越大代表动能越强。
     # 这里不算分，只输出方向与是否增强/衰减。
     # -------------------------
-    momentum: Dict[str, Any] = {}
+    momentum = MomentumSignal()
     if has("macd_hist") and pd.notna(prev.get("macd_hist")):
         macd = float(row.get("macd_hist") or 0.0)
         macd_prev = float(prev.get("macd_hist") or 0.0)
-        momentum = {
-            "macd_hist": macd,
-            "macd_hist_prev": macd_prev,
-            "direction": 1 if macd > 0 else -1 if macd < 0 else 0,
-            "strengthening": abs(macd) > abs(macd_prev),
-            "weakening": abs(macd) < abs(macd_prev),
-        }
+        momentum = MomentumSignal(
+            macd_hist=macd,
+            macd_hist_prev=macd_prev,
+            direction=1 if macd > 0 else -1 if macd < 0 else 0,
+            strengthening=abs(macd) > abs(macd_prev),
+            weakening=abs(macd) < abs(macd_prev),
+        )
         notes.append("MACD柱>0" if macd > 0 else "MACD柱<0" if macd < 0 else "MACD柱=0")
         if abs(macd) > abs(macd_prev) and abs(macd) > 0:
             notes.append("动能增强")
         elif abs(macd) < abs(macd_prev) and abs(macd_prev) > 0:
             notes.append("动能衰减")
 
-    out["momentum"] = momentum
-
     # -------------------------
     # 3) 趋势强度：ADX
     # ADX 不看多空方向，只看“有没有趋势”。ADX 高：更适合趋势策略；ADX 低：更像震荡/均值回归。
     # -------------------------
     adx = float(row.get("adx_14") or 0.0) if "adx_14" in df2.columns else 0.0
-    out["adx"] = adx
     if adx:
         if adx >= 28:
             notes.append(f"ADX={adx:.1f} 强趋势")
@@ -302,7 +292,7 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
     # 4) 突破质量：新鲜度 + 放量
     # 突破“新鲜度”很重要：prev 没突破、row 才突破 = 新事件；否则只是延续，不该重复当成“突破信号”。
     # -------------------------
-    breakout: Dict[str, Any] = {}
+    breakout = BreakoutSignal()
     if "breakout_up" in df2.columns and "breakout_down" in df2.columns and has("vol_spike_ratio"):
         bu = int(row.get("breakout_up") or 0)
         bd = int(row.get("breakout_down") or 0)
@@ -311,13 +301,13 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
         vol = float(row.get("vol_spike_ratio") or 0.0)
         fresh_up = bu == 1 and bu_prev == 0
         fresh_down = bd == 1 and bd_prev == 0
-        breakout = {
-            "breakout_up": bu,
-            "breakout_down": bd,
-            "fresh_up": fresh_up,
-            "fresh_down": fresh_down,
-            "vol_spike_ratio": vol,
-        }
+        breakout = BreakoutSignal(
+            breakout_up=bu,
+            breakout_down=bd,
+            fresh_up=fresh_up,
+            fresh_down=fresh_down,
+            vol_spike_ratio=vol,
+        )
         if fresh_up and vol >= 1.5:
             notes.append(f"新突破向上+放量({vol:.2f}x)")
         elif fresh_down and vol >= 1.5:
@@ -328,13 +318,11 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
             if bd == 1 and vol >= 1.5:
                 notes.append(f"跌破后延续({vol:.2f}x)")
 
-    out["breakout"] = breakout
-
     # -------------------------
     # 5) 波动状态：布林带宽度（挤压/扩张）
     # 交易逻辑：挤压期更容易“假信号/来回打脸”，扩张期更容易“顺势走一段”。
     # -------------------------
-    volatility: Dict[str, Any] = {}
+    volatility = VolatilitySignal()
     if "bb_width" in df2.columns and pd.notna(row.get("bb_width")):
         w = df2["bb_width"].dropna()
         if len(w) >= 50:
@@ -344,61 +332,57 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
             p80 = float(window.quantile(0.8))
             squeeze = cur <= p20
             expansion = cur >= p80
-            volatility = {
-                "bb_width": cur,
-                "p20": p20,
-                "p80": p80,
-                "squeeze": squeeze,
-                "expansion": expansion,
-            }
+            volatility = VolatilitySignal(bb_width=cur, p20=p20, p80=p80, squeeze=squeeze, expansion=expansion)
             if squeeze:
                 notes.append("布林带挤压")
             elif expansion:
                 notes.append("布林带扩张")
 
-    out["volatility"] = volatility
-
     # -------------------------
     # 6) 过热：RSI 极端（这里只输出，不在这里惩罚分数）
     # 交易逻辑：趋势里 RSI 可以长期高/低；但极端值往往意味着“追单风险上升”。
     # -------------------------
-    overheat: Dict[str, Any] = {}
+    overheat = OverheatSignal()
     if "rsi_14" in df2.columns and pd.notna(row.get("rsi_14")):
         rsi = float(row.get("rsi_14") or 50.0)
-        overheat = {"rsi_14": rsi, "overbought": rsi >= 72, "oversold": rsi <= 28}
+        overheat = OverheatSignal(rsi_14=rsi, overbought=rsi >= 72, oversold=rsi <= 28)
         if rsi >= 72:
             notes.append(f"RSI={rsi:.0f} 过热")
         elif rsi <= 28:
             notes.append(f"RSI={rsi:.0f} 极弱")
 
-    out["overheat"] = overheat
-
     # -------------------------
     # 7) 价量确认：OBV 方向（如果有）
     # OBV 上行≈资金净流入偏多；OBV 下行≈资金净流出偏空（非常粗糙，但能做确认项）。
     # -------------------------
-    volume: Dict[str, Any] = {}
+    volume = VolumeConfirmationSignal()
     if "obv" in df2.columns and pd.notna(row.get("obv")) and len(df2["obv"].dropna()) >= 10:
         obv = df2["obv"].dropna()
         obv_now = float(obv.iloc[-1])
         obv_prev = float(obv.iloc[-6]) if len(obv) >= 6 else float(obv.iloc[0])
         delta = obv_now - obv_prev
-        volume = {"obv_now": obv_now, "obv_prev5": obv_prev, "obv_delta_5": delta, "direction": 1 if delta > 0 else -1 if delta < 0 else 0}
+        volume = VolumeConfirmationSignal(
+            obv_now=obv_now,
+            obv_prev5=obv_prev,
+            obv_delta_5=delta,
+            direction=1 if delta > 0 else -1 if delta < 0 else 0,
+        )
         notes.append("OBV 上行" if delta > 0 else "OBV 下行" if delta < 0 else "OBV 走平")
-
-    out["volume"] = volume
 
     # -------------------------
     # 8) 成本/结构：AVWAP、POC（如果有）
     # AVWAP≈整段数据锚定的成交量加权成本线；POC≈成交最密集的价格区域（筹码密集区）。
     # -------------------------
-    structure: Dict[str, Any] = {}
+    structure = StructureCostSignal()
     if "avwap_full" in df2.columns and pd.notna(row.get("avwap_full")):
         avwap = float(row.get("avwap_full"))
         if avwap:
             bias = (close - avwap) / avwap
-            structure["avwap_full"] = avwap
-            structure["bias_to_avwap"] = bias
+            structure = StructureCostSignal(
+                avwap_full=avwap,
+                bias_to_avwap=bias,
+                price_to_poc_pct=structure.price_to_poc_pct,
+            )
             if bias > 0.008:
                 notes.append(f"高于AVWAP({bias:.2%})")
             elif bias < -0.008:
@@ -406,45 +390,59 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, A
 
     if "price_to_poc_pct" in df2.columns and pd.notna(row.get("price_to_poc_pct")):
         d = float(row.get("price_to_poc_pct") or 0.0)
-        structure["price_to_poc_pct"] = d
+        structure = StructureCostSignal(
+            avwap_full=structure.avwap_full,
+            bias_to_avwap=structure.bias_to_avwap,
+            price_to_poc_pct=d,
+        )
         if abs(d) > 0.02:
             notes.append(f"偏离POC较大({d:.2%})")
 
-    out["structure"] = structure
+    return TechnicalLinesSnapshot(
+        ok=True,
+        close=close,
+        adx=adx,
+        trend=trend,
+        momentum=momentum,
+        breakout=breakout,
+        volatility=volatility,
+        overheat=overheat,
+        volume=volume,
+        structure=structure,
+        notes=tuple(notes),
+    )
 
-    return out
 
-
-def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_technical_lines_to_score(signals: TechnicalLinesSnapshot) -> Dict[str, Any]:
     """
     ✅ 汇总器：把“技术线分析结果”统一转换成 score/label/regime。
 
     注意：这一步才做“打分”，方便你把所有技术线都看完后，统一调整权重与规则。
     """
-    if not signals.get("ok"):
+    if not signals.ok:
         return {
             "score": 0.0,
             "label": "数据不足",
             "regime": "mixed",
-            "detail": "；".join(signals.get("notes") or ["数据不足"]),
+            "detail": "；".join(signals.notes or ("数据不足",)),
             "components": {},
         }
 
-    close = float(signals.get("close") or 0.0)
+    close = float(signals.close or 0.0)
     _ = close  # close 目前只用于解释/扩展；保留变量方便你未来加规则
 
-    notes = list(signals.get("notes") or [])
+    notes = list(signals.notes or ())
     components: Dict[str, float] = {}
 
     # 先从各条技术线提取“方向/强弱”的结构化信息
-    trend = signals.get("trend") or {}
-    momentum = signals.get("momentum") or {}
-    breakout = signals.get("breakout") or {}
-    volatility = signals.get("volatility") or {}
-    overheat = signals.get("overheat") or {}
-    volume = signals.get("volume") or {}
-    structure = signals.get("structure") or {}
-    adx = float(signals.get("adx") or 0.0)
+    trend = signals.trend
+    momentum = signals.momentum
+    breakout = signals.breakout
+    volatility = signals.volatility
+    overheat = signals.overheat
+    volume = signals.volume
+    structure = signals.structure
+    adx = float(signals.adx or 0.0)
 
     score = 0.0
 
@@ -452,9 +450,9 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 1) 趋势线（均线）
     # -------------------------
     c = 0.0
-    bias = float(trend.get("bias_to_ema") or 0.0)
-    ema_gt_sma = bool(trend.get("ema_gt_sma")) if "ema_gt_sma" in trend else None
-    ema_slope_5 = trend.get("ema_slope_5")
+    bias = float(trend.bias_to_ema or 0.0)
+    ema_gt_sma = trend.ema_gt_sma
+    ema_slope_5 = trend.ema_slope_5
 
     if bias > 0.004:
         c += 0.25
@@ -479,9 +477,9 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 2) 动能线（MACD）
     # -------------------------
     c = 0.0
-    macd_dir = int(momentum.get("direction") or 0)
-    strengthening = bool(momentum.get("strengthening"))
-    weakening = bool(momentum.get("weakening"))
+    macd_dir = int(momentum.direction or 0)
+    strengthening = bool(momentum.strengthening)
+    weakening = bool(momentum.weakening)
     if macd_dir > 0:
         c += 0.16
     elif macd_dir < 0:
@@ -510,11 +508,11 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 4) 突破线（新鲜度+放量）
     # -------------------------
     c = 0.0
-    fresh_up = bool(breakout.get("fresh_up"))
-    fresh_down = bool(breakout.get("fresh_down"))
-    vol = float(breakout.get("vol_spike_ratio") or 0.0)
-    bu = int(breakout.get("breakout_up") or 0)
-    bd = int(breakout.get("breakout_down") or 0)
+    fresh_up = bool(breakout.fresh_up)
+    fresh_down = bool(breakout.fresh_down)
+    vol = float(breakout.vol_spike_ratio or 0.0)
+    bu = int(breakout.breakout_up or 0)
+    bd = int(breakout.breakout_down or 0)
 
     if fresh_up and vol >= 1.5:
         c += 0.18
@@ -533,8 +531,8 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 5) 波动线（布林带宽度）
     # -------------------------
     c = 0.0
-    squeeze = bool(volatility.get("squeeze"))
-    expansion = bool(volatility.get("expansion"))
+    squeeze = bool(volatility.squeeze)
+    expansion = bool(volatility.expansion)
     if squeeze:
         # 挤压期更容易“来回打脸”，这里弱化整体分数（相当于降低置信度）
         c -= 0.05
@@ -548,9 +546,9 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 6) 过热线（RSI）——只做“追单风险”矫正
     # -------------------------
     c = 0.0
-    if overheat:
-        overbought = bool(overheat.get("overbought"))
-        oversold = bool(overheat.get("oversold"))
+    if overheat.rsi_14 is not None:
+        overbought = bool(overheat.overbought)
+        oversold = bool(overheat.oversold)
         # 只在 score 指向同方向时惩罚（防追涨/追跌）
         if score > 0.15 and overbought:
             c -= 0.08
@@ -563,7 +561,7 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 7) 价量线（OBV）——确认项
     # -------------------------
     c = 0.0
-    obv_dir = int(volume.get("direction") or 0) if volume else 0
+    obv_dir = int(volume.direction or 0)
     if obv_dir > 0:
         c += 0.04
     elif obv_dir < 0:
@@ -575,7 +573,7 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     # 8) 成本/结构线（AVWAP / POC）——确认+风险提示
     # -------------------------
     c = 0.0
-    bias_avwap = structure.get("bias_to_avwap")
+    bias_avwap = structure.bias_to_avwap
     if isinstance(bias_avwap, (int, float)):
         if bias_avwap > 0.008:
             c += 0.06
@@ -584,7 +582,7 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
     components["avwap"] = c
     score += c
 
-    poc_d = structure.get("price_to_poc_pct")
+    poc_d = structure.price_to_poc_pct
     if isinstance(poc_d, (int, float)) and abs(poc_d) > 0.02:
         # 距离 POC 太远时，追单风险上升，轻微往 0 拉回
         score *= 0.92
@@ -613,29 +611,6 @@ def summarize_technical_lines_to_score(signals: Dict[str, Any]) -> Dict[str, Any
 
     return {"score": score, "label": label, "regime": regime, "detail": "；".join(notes), "components": components}
 
-
-def assess_trend_regime(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
-    """
-    ✅ 兼容旧调用方式：返回 score/label/regime（内部已改为“先技术线分析，再汇总打分”）。
-    """
-    signals = analyze_technical_lines_single_tf(df)
-    out = summarize_technical_lines_to_score(signals)
-    out["signals"] = signals  # 方便你在外层打印每条技术线
-    return out
-
-
-def analyze_trend_single_tf(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
-    """
-    兼容旧函数名（建议使用 `analyze_technical_lines_single_tf` + `summarize_technical_lines_to_score`）。
-
-    说明：
-    - 旧版的 `analyze_trend_single_tf` 是“边分析边打分”。
-    - 现在按你的要求拆成两层：
-        1) 先算技术线（signals）
-        2) 再统一汇总成 score/label/regime
-    - 因此这个兼容函数等价于 `assess_trend_regime`。
-    """
-    return assess_trend_regime(df)
 
 
 def _equity_usdc(account: AccountOverview) -> float:

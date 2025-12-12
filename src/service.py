@@ -41,5 +41,5 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     market_data = fetch_market_data(exchange, SYMBOL)
 
     plan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
-    print(plan)
+    print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)
