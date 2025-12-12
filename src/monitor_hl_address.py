@@ -258,7 +258,7 @@ def print_summary(summary: dict):
             print("-" * 80)
 
     # ---------------- 当前挂单 ----------------
-    print("\n📋 当前挂单：", len(open_orders), "个")
+    print("\n📋 当前挂单 最多展示最近：", len(open_orders), "个")
     if not open_orders:
         print("⚪ 暂无挂单")
     else:
@@ -275,7 +275,7 @@ def print_summary(summary: dict):
             else:
                 ts_str = "-"
 
-            print(f"📝 挂单 最多展示最近：{coin} ｜ side={side_raw} ｜ 价格={limit_px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
+            print(f"📝 挂单 ：{coin} ｜ side={side_raw} ｜ 价格={limit_px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
 
     # ---------------- 近期成交记录 ----------------
     print("\n📒 近期成交记录（最多展示最近", RECENT_FILLS_LIMIT, "条）")
