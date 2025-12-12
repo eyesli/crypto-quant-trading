@@ -2,46 +2,31 @@
 # -*- coding: utf-8 -*-
 
 """
-实时监控 Hyperliquid 上某个地址的永续合约账户状态（中文版本）
+实时监控 Hyperliquid 账户状态（含止盈止损监控版）
 功能：
-- 获取账户总权益
-- 获取保证金占用
-- 获取所有币种的仓位信息：方向、数量、杠杆、未实现盈亏、ROE、仓位面值
-- 数字转换成人类易读的中文单位（万 / 亿）
-- 监听变化自动打印
-- ✅ 新增：近期挂单（openOrders）
-- ✅ 新增：近期成交记录（userFills）
+- 获取账户权益、保证金
+- 获取仓位详情
+- ✅ 新增：区分展示普通挂单（Limit）和止盈止损单（TP/SL/Trigger）
+- ✅ 修复：使用 frontendOpenOrders 获取更全的订单信息
 """
 
 import time
 from datetime import datetime
 import requests
 
-# Hyperliquid Info API（无需 API Key，可公开调用）
+# Hyperliquid Info API
 API_URL = "https://api.hyperliquid.xyz/info"
 
-# 需要监控的钱包地址
+# 替换为你要监控的地址
 ADDRESS = "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae"
 
-# 轮询间隔（秒）
+# 轮询间隔
 POLL_INTERVAL = 5
-
-# 只展示最近 N 条成交
 RECENT_FILLS_LIMIT = 10
 
 
-# ----------------------------------------------------------
-# 🀄 中文数字格式化：把大数字转换成 万 / 亿 方便阅读
-# ----------------------------------------------------------
 def format_chinese_number(num: float) -> str:
-    """
-    数字转中文单位：
-      12_345 → 1.23万
-      56_000_000 → 5600万
-      987_654_321 → 9.88亿
-    """
     abs_num = abs(num)
-
     if abs_num >= 1_0000_0000:
         return f"{num / 1_0000_0000:.2f}亿"
     elif abs_num >= 10_000:
@@ -50,294 +35,202 @@ def format_chinese_number(num: float) -> str:
         return f"{num:,.2f}"
 
 
-# ----------------------------------------------------------
-# 查询 Hyperliquid 永续合约的账户状态（clearinghouseState）
-# ----------------------------------------------------------
 def fetch_state(address: str):
-    """
-    请求 Hyperliquid API 获取某地址的永续账户信息
-    请求体：
-      {
-        "type": "clearinghouseState",
-        "user": <钱包地址>
-      }
-    """
-    payload = {
-        "type": "clearinghouseState",
-        "user": address
-    }
-
-    resp = requests.post(API_URL, json=payload, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 如果返回是列表（代理封装情况），取第0项
-    if isinstance(data, list):
-        return data[0]
-    return data
+    payload = {"type": "clearinghouseState", "user": address}
+    try:
+        resp = requests.post(API_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if not isinstance(data, list) else data[0]
+    except Exception as e:
+        print(f"获取状态失败: {e}")
+        return {}
 
 
 # ----------------------------------------------------------
-# 🔍 获取该地址的当前挂单（openOrders）
+# 🔍 修改：使用 frontendOpenOrders 获取所有订单（含TP/SL）
 # ----------------------------------------------------------
-def fetch_open_orders(address: str):
+def fetch_all_open_orders(address: str):
     """
-    查询该地址当前所有挂单（可以理解为“订单簿里还没成交的单子”）
-    Info endpoint:
-      {
-        "type": "openOrders",
-        "user": <钱包地址>
-      }
+    frontendOpenOrders 能获取到：
+    1. 普通限价单 (Limit)
+    2. 止盈止损/触发单 (Stop/Take Profit) -> 带有 isTrigger: True 字段
     """
     payload = {
-        "type": "openOrders",
+        "type": "frontendOpenOrders",
         "user": address,
     }
-    resp = requests.post(API_URL, json=payload, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 一般返回 list；这里做一下兜底
-    if isinstance(data, list):
-        return data
-    elif isinstance(data, dict):
-        return [data]
-    else:
+    try:
+        resp = requests.post(API_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"获取挂单失败: {e}")
         return []
 
 
-# ----------------------------------------------------------
-# 🔍 获取该地址的近期成交记录（userFills）
-# ----------------------------------------------------------
 def fetch_recent_fills(address: str, limit: int = RECENT_FILLS_LIMIT):
-    """
-    查询该地址的约成交记录（成交明细）。
-    Info endpoint:
-      {
-        "type": "userFills",
-        "user": <钱包地址>
-      }
-    返回格式一般为 list[fill]，这里做一下兜底并只取最近 limit 条。
-    """
-    payload = {
-        "type": "userFills",
-        "user": address,
-    }
-    resp = requests.post(API_URL, json=payload, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+    payload = {"type": "userFills", "user": address}
+    try:
+        resp = requests.post(API_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        fills = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
 
-    fills = []
-    if isinstance(data, list):
-        fills = data
-    elif isinstance(data, dict):
-        # 有些情况下可能只返回一条
-        fills = [data]
-    else:
-        fills = []
-
-    # 按时间排序（time 字段，ms），再截取最近 limit 条
-    def _get_time(f):
-        return int(f.get("time", 0))
-
-    fills_sorted = sorted(fills, key=_get_time, reverse=True)
-    return fills_sorted[:limit]
+        # 按时间倒序
+        fills_sorted = sorted(fills, key=lambda x: int(x.get("time", 0)), reverse=True)
+        return fills_sorted[:limit]
+    except Exception:
+        return []
 
 
-# ----------------------------------------------------------
-# 提取我们关心的字段：
-#   - 账户总权益 accountValue
-#   - 总保证金占用 totalMarginUsed
-#   - 逐币种仓位详情
-#   - 当前挂单列表
-#   - 近期成交记录
-# ----------------------------------------------------------
-def summarize(state: dict, open_orders: list, fills: list) -> dict:
-    """
-    把 API 原始结构拆成可读的数据结构
-    """
-
-    # marginSummary 中包括账户整体信息
+def summarize(state: dict, all_orders: list, fills: list) -> dict:
     margin = state.get("marginSummary", {})
-    # 账户总权益（单位：USDC）
     account_value = float(margin.get("accountValue", 0))
-    # 保证金占用
     margin_used = float(margin.get("totalMarginUsed", 0))
 
-    # 仓位列表
     positions = []
-    # assetPositions 为各个币种的仓位结构
     for ap in state.get("assetPositions", []):
         pos = ap.get("position", {})
-
-        # szi：仓位大小（正=做多，负=做空）
         szi = float(pos.get("szi", 0))
-
-        # 多空方向
-        side = "做多" if szi > 0 else "做空" if szi < 0 else "空仓"
-
-        # entryPx：开仓均价
-        entry = float(pos.get("entryPx", 0))
-
-        # leverage：杠杆信息
-        leverage = pos.get("leverage", {}).get("value", None)
-        lev_type = pos.get("leverage", {}).get("type", None)
-
-        # unrealizedPnl：未实现盈亏
-        upnl = float(pos.get("unrealizedPnl", 0))
-
-        # returnOnEquity：收益率（ROE）
-        roe = float(pos.get("returnOnEquity", 0))
-
-        # positionValue：仓位名义价值（USD）
-        pos_value = float(pos.get("positionValue", 0))
+        if szi == 0: continue  # 忽略空仓位
 
         positions.append({
-            "coin": pos.get("coin"),      # 币种
-            "side": side,                 # 做多 / 做空 / 空仓
-            "size": abs(szi),             # 仓位数量（绝对值）
-            "entry": entry,               # 开仓均价
-            "leverage": leverage,         # 杠杆倍数
-            "lev_type": lev_type,         # cross / isolated
-            "upnl": upnl,                 # 未实现盈亏（USDC）
-            "roe": roe,                   # 收益率（小数，如0.12）
-            "pos_value": pos_value        # 仓位面值
+            "coin": pos.get("coin"),
+            "side": "做多" if szi > 0 else "做空",
+            "size": abs(szi),
+            "entry": float(pos.get("entryPx", 0)),
+            "leverage": pos.get("leverage", {}).get("value"),
+            "upnl": float(pos.get("unrealizedPnl", 0)),
+            "roe": float(pos.get("returnOnEquity", 0)),
+            "pos_value": float(pos.get("positionValue", 0))
         })
+
+    # -----------------------------------------------
+    # 拆分订单：普通挂单 vs 触发单(TP/SL)
+    # -----------------------------------------------
+    normal_orders = []
+    trigger_orders = []
+
+    for o in all_orders:
+        # 判断是否为触发单
+        is_trigger = o.get("isTrigger", False) or o.get("orderType") == "Trigger"
+
+        # 提取关键信息
+        order_info = {
+            "coin": o.get("coin"),
+            "side": o.get("side"),  # 'B' or 'A'
+            "size": float(o.get("sz", 0)),
+            "limit_px": float(o.get("limitPx", 0)),
+            "trigger_px": float(o.get("triggerPx", 0)),  # 触发价格
+            "trigger_cond": o.get("triggerCondition", ""),  # 触发条件
+            "is_tpsl": o.get("isPositionTpsl", False),  # 是否为仓位附带的止盈止损
+            "timestamp": int(o.get("timestamp", 0))
+        }
+
+        if is_trigger:
+            trigger_orders.append(order_info)
+        else:
+            normal_orders.append(order_info)
 
     return {
         "account_value": account_value,
         "margin_used": margin_used,
         "positions": positions,
-        "open_orders": open_orders,
+        "normal_orders": normal_orders,  # 普通限价单
+        "trigger_orders": trigger_orders,  # 止盈止损单
         "fills": fills,
     }
 
 
-# ----------------------------------------------------------
-# 输出报告（中文）
-# ----------------------------------------------------------
 def print_summary(summary: dict):
     print("\n" + "=" * 80)
-    print(f"📍 监控地址：{ADDRESS}")
+    print(f"📍 监控地址：{ADDRESS}  |  🕒 {datetime.now().strftime('%H:%M:%S')}")
 
-    # 账户总权益
-    print(f"💰 账户总权益：{format_chinese_number(summary['account_value'])}（USDC）")
+    # 1. 账户概况
+    print(
+        f"💰 权益：{format_chinese_number(summary['account_value'])} U   📌 保证金：{format_chinese_number(summary['margin_used'])} U")
 
-    # 总保证金占用
-    print(f"📌 保证金占用：{format_chinese_number(summary['margin_used'])}（USDC）")
-
+    # 2. 持仓信息
     positions = summary["positions"]
-    open_orders = summary.get("open_orders", [])
-    fills = summary.get("fills", [])
-
-    print(f"📊 当前持仓：{len(positions)} 个币种")
-    if not positions:
-        print("⚪ 当前未持有任何永续合约仓位")
-    else:
-        print("-" * 80)
-        # 每一个币种的仓位信息
+    if positions:
+        print("-" * 40)
         for p in positions:
-            print(f"🪙 币种：{p['coin']}   │ 方向：{p['side']}")
-            print(f"📦 仓位数量：{format_chinese_number(p['size'])}")
-            print(f"💼 仓位名义价值：{format_chinese_number(p['pos_value'])} USDC")
-            print(f"🎯 开仓均价：{p['entry']:.2f}")
-
-            # 杠杆信息
-            if p["leverage"]:
-                lev_label = f"{p['leverage']} 倍（{p['lev_type']}）"
-            else:
-                lev_label = "无"
-
-            print(f"⚙️ 杠杆：{lev_label}")
-
-            # 未实现盈亏
-            print(f"📈 未实现盈亏：{format_chinese_number(p['upnl'])} USDC")
-
-            # 收益率ROE
-            print(f"📉 收益率（ROE）：{p['roe'] * 100:.2f}%")
-            print("-" * 80)
-
-    # ---------------- 当前挂单 ----------------
-    print("\n📋 当前挂单 最多展示最近：", len(open_orders), "个")
-    if not open_orders:
-        print("⚪ 暂无挂单")
+            print(f"🪙 {p['coin']} {p['side']} {p['leverage']}x")
+            print(f"   数量: {format_chinese_number(p['size'])} ({format_chinese_number(p['pos_value'])}U)")
+            print(f"   均价: {p['entry']:.4f}")
+            pnl_icon = "🟢" if p['upnl'] >= 0 else "🔴"
+            print(f"   盈亏: {pnl_icon} {format_chinese_number(p['upnl'])} U (ROE: {p['roe'] * 100:.2f}%)")
     else:
-        for o in open_orders:
-            coin = o.get("coin")
-            side_raw = o.get("side")  # 'A' / 'B'，在 Hyperliquid 中分别代表不同方向
-            limit_px = float(o.get("limitPx", 0))
-            sz = float(o.get("sz", 0))
-            ts = int(o.get("timestamp", 0))
+        print("⚪ 无持仓")
 
-            # 时间戳转为人类可读时间
-            if ts > 0:
-                ts_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                ts_str = "-"
+    # 3. 止盈止损 / 触发单 (新增)
+    trigger_orders = summary["trigger_orders"]
+    print(f"\n⚡ 止盈止损/触发单 ({len(trigger_orders)})")
+    if trigger_orders:
+        for t in trigger_orders:
+            side_str = "买入平空" if t['side'] == 'B' else "卖出平多"
+            cond_str = t['trigger_cond']  # "Above" or "Below" 等
 
-            print(f"📝 挂单 ：{coin} ｜ side={side_raw} ｜ 价格={limit_px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
+            # 尝试推断是止盈还是止损
+            # (这只是简单推断，准确判断需要结合持仓方向，这里仅作展示)
+            type_label = "触发单"
+            if t['is_tpsl']:
+                type_label = "仓位TP/SL"
 
-    # ---------------- 近期成交记录 ----------------
-    print("\n📒 近期成交记录（最多展示最近", RECENT_FILLS_LIMIT, "条）")
-    if not fills:
-        print("⚪ 暂无成交记录")
+            print(f"   🎯 {t['coin']} | {side_str} | {type_label}")
+            print(f"      触发价: {t['trigger_px']} ({cond_str})")
+            print(f"      数量: {format_chinese_number(t['size'])}")
     else:
-        for f in fills:
-            coin = f.get("coin")
-            px = float(f.get("px", 0))
-            sz = float(f.get("sz", 0))
-            dir_raw = f.get("dir") or f.get("side")  # dir: 'Buy'/'Sell'
-            ts = int(f.get("time", 0))
+        print("   ⚪ 无")
 
-            if ts > 0:
-                ts_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                ts_str = "-"
+    # 4. 普通挂单
+    normal_orders = summary["normal_orders"]
+    print(f"\n📋 普通限价挂单 ({len(normal_orders)})")
+    if normal_orders:
+        for o in normal_orders[:5]:  # 只显示前5个
+            side_str = "买入" if o['side'] == 'B' else "卖出"
+            print(f"   📝 {o['coin']} {side_str} | 价格: {o['limit_px']} | 数量: {format_chinese_number(o['size'])}")
+    else:
+        print("   ⚪ 无")
 
-            # 中文方向
-            if dir_raw == "Buy":
-                direction = "买入"
-            elif dir_raw == "Sell":
-                direction = "卖出"
-            else:
-                direction = str(dir_raw)
-
-            fee = float(f.get("fee", 0))
-            fee_token = f.get("feeToken", "")
-
-            print(f"✅ 成交：{coin} ｜ {direction} ｜ 价格={px:.4f} ｜ 数量={format_chinese_number(sz)} ｜ 时间={ts_str}")
-            if fee:
-                print(f"   手续费：{fee} {fee_token}")
+    # 5. 成交记录
+    fills = summary["fills"]
+    print(f"\n📒 最新成交")
+    if fills:
+        for f in fills[:3]:
+            side = "买入" if f['side'] == 'B' else "卖出"
+            ts = datetime.fromtimestamp(int(f['time']) / 1000).strftime("%H:%M:%S")
+            print(
+                f"   ✅ {ts} | {f['coin']} {side} | 价: {float(f['px']):.4f} | 量: {format_chinese_number(float(f['sz']))}")
 
     print("=" * 80 + "\n")
 
 
-# ----------------------------------------------------------
-# 主程序：轮询监控
-# ----------------------------------------------------------
 def main():
-    print(f"开始实时监控 Hyperliquid 永续账户（中文输出）")
-    print(f"地址：{ADDRESS}")
-    print(f"轮询间隔：{POLL_INTERVAL} 秒\n")
-
-    prev = None
+    print(f"🚀 开始监控，按 Ctrl+C 退出...")
+    prev_summary = None
 
     while True:
         try:
             state = fetch_state(ADDRESS)
-            open_orders = sorted(fetch_open_orders(ADDRESS), key=lambda o: int(o.get("timestamp", 0)), reverse=True)[:10]
+            all_orders = fetch_all_open_orders(ADDRESS)
+            fills = fetch_recent_fills(ADDRESS)
 
-            fills = fetch_recent_fills(ADDRESS, RECENT_FILLS_LIMIT)
+            summary = summarize(state, all_orders, fills)
 
-            summary = summarize(state, open_orders, fills)
+            # 简单去重：如果数据和上次完全一样就不打印，避免刷屏
+            # 这里为了演示效果，每次轮询如果不报错就打印，或者你可以把下面这行注释掉来强制刷新
+            # if summary != prev_summary:
+            print_summary(summary)
+            prev_summary = summary
 
-            # 只有在数据变化时才打印（简单粗暴的比较）
-            if summary != prev:
-                print_summary(summary)
-                prev = summary
-
+        except KeyboardInterrupt:
+            print("\n退出监控")
+            break
         except Exception as e:
-            print(f"❌ 错误：{e}")
+            print(f"⚠️ 发生错误: {e}")
 
         time.sleep(POLL_INTERVAL)
 
