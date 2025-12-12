@@ -740,3 +740,79 @@ def _entry_trigger_1m(df_1m: Optional[pd.DataFrame]) -> Tuple[bool, bool]:
     long_trigger = (buv == 1 and buv_prev == 0) or (macd_up and vol_ok)
     short_trigger = ((bdown == 1 and bdown_prev == 0) and vol_ok) or (macd_down and vol_ok)
     return bool(long_trigger), bool(short_trigger)
+
+
+def decide_regime(df_1h: pd.DataFrame, df_4h: pd.DataFrame, metrics) -> dict:
+    base, adx = classify_trend_range(df_1h)
+    if base == "mixed":
+        base2, adx2 = classify_trend_range(df_4h)
+        if base2 != "mixed":
+            base, adx = base2, adx2
+
+    vol_state, vol_dbg = classify_vol_state(df_1h)  # 优先 1h 波动状态
+
+    spread_bps = float(getattr(metrics, "spread_bps", 0.0) or 0.0)
+
+    # no-trade rules
+    nt, reason = is_no_trade_high_cost(vol_state, spread_bps, max_spread_bps=15)
+    if nt:
+        return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
+                "allow_mean_reversion": False, "risk_scale": 0.0,
+                "reason": reason, "debug": {"adx": adx, **vol_dbg}}
+
+    nt, reason = is_no_trade_chop(base, vol_state)
+    if nt:
+        return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
+                "allow_mean_reversion": False, "risk_scale": 0.0,
+                "reason": reason, "debug": {"adx": adx, **vol_dbg}}
+
+    # allow flags
+    allow_trend = base in ("trend", "mixed") and vol_state != "low"
+    allow_mean_rev = base in ("range", "mixed") and vol_state != "high"
+
+    # risk scale
+    risk_scale = 0.7 if vol_state == "high" else 1.2 if vol_state == "low" else 1.0
+
+    return {"regime": base, "base": base, "vol_state": vol_state,
+            "allow_trend": allow_trend, "allow_mean_reversion": allow_mean_rev,
+            "risk_scale": risk_scale,
+            "reason": f"ADX={adx:.1f}, vol={vol_state}, spread={spread_bps:.1f}bps",
+            "debug": {"adx": adx, **vol_dbg}}
+
+
+def classify_vol_state(df: pd.DataFrame, col_candidates=("natr_14", "bb_width"),
+                       lookback=200, q_low=0.2, q_high=0.8) -> tuple[str, dict]:
+    col = next((c for c in col_candidates if c in df.columns and df[c].notna().sum() >= 60), None)
+    if not col:
+        return "unknown", {"col": None}
+
+    s = df[col].dropna()
+    w = s.iloc[-lookback:] if len(s) >= lookback else s
+    cur = float(w.iloc[-1])
+    p20 = float(w.quantile(q_low))
+    p80 = float(w.quantile(q_high))
+
+    if cur <= p20:
+        return "low", {"col": col, "cur": cur, "p20": p20, "p80": p80}
+    if cur >= p80:
+        return "high", {"col": col, "cur": cur, "p20": p20, "p80": p80}
+    return "normal", {"col": col, "cur": cur, "p20": p20, "p80": p80}
+
+
+def is_no_trade_high_cost(vol_state: str, spread_bps: float, max_spread_bps=15) -> tuple[bool, str]:
+    if vol_state == "high" and spread_bps > max_spread_bps:
+        return True, f"NO_TRADE: high vol + spread {spread_bps:.1f}bps"
+    return False, ""
+
+def is_no_trade_chop(base: str, vol_state: str) -> tuple[bool, str]:
+    if base == "range" and vol_state == "low":
+        return True, "NO_TRADE: range + low vol (chop)"
+    return False, ""
+
+def classify_trend_range(df: pd.DataFrame) -> tuple[str, float]:
+    adx = float(df["adx_14"].dropna().iloc[-1]) if "adx_14" in df.columns and df["adx_14"].notna().any() else 0.0
+    if adx >= 25:
+        return "trend", adx
+    if 0 < adx <= 18:
+        return "range", adx
+    return "mixed", adx

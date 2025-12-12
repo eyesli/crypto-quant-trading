@@ -40,6 +40,8 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     account_overview = fetch_account_overview(exchange)
     market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
 
+    exchange.fetch_ohlcv(SYMBOL, "1h", limit=500)
+    decide_regime();
     plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)
