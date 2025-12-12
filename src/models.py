@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING
 
 
 Side = Literal["buy", "sell"]
@@ -249,4 +250,55 @@ class TechnicalLinesSnapshot:
 
     # 预留扩展：如果你后续想把原始 row/prev 也保留下来做 debug
     debug: Optional[dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class MarketDataSnapshot:
+    """
+    市场数据快照（fetch_market_data 的返回值对象）。
+
+    设计目标：
+    - 让“数据获取层”的输出结构稳定、强类型、可复用
+    - 避免业务层到处写 magic string：market_data["timeframes"]["ohlcv_df"] 之类
+    """
+
+    symbol: str
+    # 多周期K线原始数据（ccxt fetch_ohlcv 的返回）
+    ohlcv: dict[str, list[list[float]]]
+
+    # 多周期K线 DataFrame（已计算技术指标）
+    # 为避免 models.py 强依赖 pandas，这里只在 type-checking 时导入 pd
+    ohlcv_df: dict[str, "pd.DataFrame"]
+
+    metrics: "MarketMetrics"
+
+
+if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
+
+
+@dataclass(frozen=True)
+class MarketMetrics:
+    """
+    市场附加指标（fetch_market_data 里除K线以外的一切“杂项指标”）。
+
+    设计目标：
+    - 替换原先的 metrics dict（避免到处用 metrics["xxx"]）
+    - 字段可为空（不同交易所/不同品种可能拿不到某些数据）
+
+    备注：
+    - ticker/open_interest/order_book 这些结构各交易所差异较大，这里用 dict[str, Any] 保持兼容。
+    """
+
+    ticker: dict[str, Any]
+    funding_rate: Optional[float] = None
+    open_interest: Optional[dict[str, Any]] = None
+    order_book: Optional[dict[str, Any]] = None
+
+    # microstructure（轻量）
+    spread: Optional[float] = None
+    spread_bps: Optional[float] = None
+    order_book_bid_depth: Optional[float] = None
+    order_book_ask_depth: Optional[float] = None
+    order_book_imbalance: Optional[float] = None
 

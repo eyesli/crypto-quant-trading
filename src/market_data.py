@@ -14,6 +14,9 @@ import math
 import pandas as pd
 import pandas_ta as ta
 
+from src.config import TIMEFRAME_SETTINGS
+from src.models import MarketDataSnapshot, MarketMetrics
+
 @dataclass
 class AccountOverview:
     balances: Balances
@@ -156,7 +159,7 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]:
+def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> MarketDataSnapshot:
     """
     获取指定交易对的多周期（1m / 1h / 4h / 1d / 1w）K线、行情、资金费率、盘口等信息，供策略分析使用。
     """
@@ -166,26 +169,16 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     # # ticker = fetch_ticker(exchange, symbol)
     # snapshot["ticker"] = ticker or {}
 
-    timeframe_settings = {
-        "1m": 500,
-        "1h": 200,
-        "4h": 150,
-        "1d": 120,
-        "1w": 104,
-    }
-    snapshot: Dict[str, Any] = {
-        "symbol": symbol,
-        "timeframes": {},
-        "metrics": {},
-    }
+    ticker: Dict[str, Any]
     try:
-        snapshot["metrics"]["ticker"] = exchange.fetch_ticker(symbol)
+        ticker = exchange.fetch_ticker(symbol)
     except Exception:
-        snapshot["metrics"]["ticker"] = {}
+        ticker = {}
     ohlcv_map: Dict[str, List[List[float]]] = {}
     df_map: Dict[str, pd.DataFrame] = {}
 
-    for timeframe, limit in timeframe_settings.items():
+    # 多周期拉取（timeframe -> K线条数）
+    for timeframe, limit in TIMEFRAME_SETTINGS.items():
         data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         if not data:
             continue
@@ -193,12 +186,9 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
         df = ohlcv_to_df(data)
         df = compute_technical_factors(df)
         df_map[timeframe] = df
-    snapshot["timeframes"]["ohlcv"] = ohlcv_map
-    snapshot["timeframes"]["ohlcv_df"] = df_map
-
     # --- derivatives metrics ---
     funding_info = exchange.fetch_funding_rate(symbol)
-    snapshot["metrics"]["funding_rate"] = funding_info.get("fundingRate")
+    funding_rate = funding_info.get("fundingRate")
     # {'baseVolume': None, 'datetime': None,
     #  'info': {'baseId': 0, 'dayBaseVlm': '49885.98866', 'dayNtlVlm': '4574544356.8517580032', 'funding': '0.0000125',
     #           'impactPxs': ['89804.0', '89833.0'], 'marginTableId': '56', 'markPx': '89842.0', 'maxLeverage': '40',
@@ -206,7 +196,6 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     #           'premium': '-0.0004673157', 'prevDayPx': '92026.0', 'szDecimals': '5'}, 'openInterestAmount': 21528.52084,
     #  'openInterestValue': None, 'quoteVolume': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': None}
     interest = exchange.fetch_open_interest(symbol)
-    snapshot["metrics"]["open_interest"] = interest
 
     # {'asks': [[89768.0, 14.26363], [89769.0, 1.80097], [89770.0, 1.72654], [89771.0, 2.22226], [89772.0, 2.57124],
     #           [89773.0, 2.1163], [89774.0, 0.41978], [89775.0, 3.66434], [89776.0, 0.62151], [89777.0, 0.2443],
@@ -218,7 +207,12 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
     #           [89752.0, 0.9379], [89751.0, 2.0736], [89750.0, 1.20233], [89749.0, 1.34698], [89748.0, 1.03358]],
     #  'datetime': '2025-12-11T15:57:56.815Z', 'nonce': None, 'symbol': 'BTC/USDC:USDC', 'timestamp': 1765468676815}
     order_book = exchange.fetch_order_book(symbol, limit=100)
-    snapshot["metrics"]["order_book"] = order_book
+
+    spread = None
+    spread_bps = None
+    bid_depth = None
+    ask_depth = None
+    imbalance = None
 
     # --- microstructure (lightweight) ---
     try:
@@ -227,21 +221,31 @@ def fetch_market_data(exchange: ccxt.hyperliquid, symbol: str) -> Dict[str, Any]
         best_bid = float(bids[0][0]) if bids else None
         best_ask = float(asks[0][0]) if asks else None
         if best_bid and best_ask and best_ask > 0:
-            snapshot["metrics"]["spread"] = best_ask - best_bid
-            snapshot["metrics"]["spread_bps"] = (best_ask - best_bid) / best_ask * 10_000
+            spread = best_ask - best_bid
+            spread_bps = (best_ask - best_bid) / best_ask * 10_000
 
         depth_levels = 20
         bid_depth = sum(float(px_qty[1]) for px_qty in bids[:depth_levels]) if bids else 0.0
         ask_depth = sum(float(px_qty[1]) for px_qty in asks[:depth_levels]) if asks else 0.0
         denom = bid_depth + ask_depth
-        snapshot["metrics"]["order_book_bid_depth"] = bid_depth
-        snapshot["metrics"]["order_book_ask_depth"] = ask_depth
-        snapshot["metrics"]["order_book_imbalance"] = (bid_depth - ask_depth) / denom if denom else 0.0
+        imbalance = (bid_depth - ask_depth) / denom if denom else 0.0
     except Exception:
         # 盘口数据是“锦上添花”，不让它影响主流程
         pass
 
-    return snapshot
+    metrics_obj = MarketMetrics(
+        ticker=ticker,
+        funding_rate=float(funding_rate) if funding_rate is not None else None,
+        open_interest=interest,
+        order_book=order_book,
+        spread=float(spread) if spread is not None else None,
+        spread_bps=float(spread_bps) if spread_bps is not None else None,
+        order_book_bid_depth=float(bid_depth) if bid_depth is not None else None,
+        order_book_ask_depth=float(ask_depth) if ask_depth is not None else None,
+        order_book_imbalance=float(imbalance) if imbalance is not None else None,
+    )
+
+    return MarketDataSnapshot(symbol=symbol, ohlcv=ohlcv_map, ohlcv_df=df_map, metrics=metrics_obj)
 
 
 def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:

@@ -11,8 +11,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
+from src.config import TIMEFRAME_SETTINGS
 from src.market_data import AccountOverview
 from src.models import (
+    MarketDataSnapshot,
     BreakoutSignal,
     MomentumSignal,
     OverheatSignal,
@@ -28,7 +30,7 @@ from src.models import (
 from src.risk import calc_amount_from_risk
 
 
-def run_complex_strategy(account_overview: AccountOverview, market_data: Dict[str, Any]) -> TradePlan:
+def run_complex_strategy(account_overview: AccountOverview, market_data: MarketDataSnapshot) -> TradePlan:
     """
     兼容旧入口名：返回 TradePlan（不再只是 trend_summary）。
     """
@@ -37,31 +39,60 @@ def run_complex_strategy(account_overview: AccountOverview, market_data: Dict[st
 
 def generate_trade_plan(
         account_overview: AccountOverview,
-        market_data: Dict[str, Any],
+        market_data: MarketDataSnapshot,
         *,
         cfg: StrategyConfig,
 ) -> TradePlan:
-    symbol = market_data.get("symbol") or cfg.symbol
-    df_map: Dict[str, pd.DataFrame] = market_data["timeframes"]["ohlcv_df"]
+    symbol = market_data.symbol or cfg.symbol
+    df_map: Dict[str, pd.DataFrame] = market_data.ohlcv_df
 
-    # 先“把技术线分析出来”（不在这里直接算总分）
-    sig_4h = analyze_technical_lines_single_tf(df_map.get("4h"))
-    sig_1h = analyze_technical_lines_single_tf(df_map.get("1h"))
-    sig_1m = analyze_technical_lines_single_tf(df_map.get("1m"))
+    # =========================
+    # 0) 多周期“全量”技术线分析
+    # =========================
+    # 你说“要拿全”：这里不再只取 4h/1h/1m，而是把所有 timeframe 都分析一遍。
+    #
+    # 说明：
+    # - analyze_technical_lines_single_tf：只产出技术线 signals（不算分）
+    # - summarize_technical_lines_to_score：把 signals 汇总成 score/label/regime（统一出口）
+    timeframes = list(TIMEFRAME_SETTINGS.keys())  # 默认顺序：1m/1h/4h/1d/1w
+    # 如果 df_map 里有额外 timeframe（未来扩展），也纳入分析
+    for tf in df_map.keys():
+        if tf not in timeframes:
+            timeframes.append(tf)
 
-    # 再对每个周期做一次“汇总评分”（统一出口，方便未来回测/调参/可视化）
-    t4h = summarize_technical_lines_to_score(sig_4h)
-    t1h = summarize_technical_lines_to_score(sig_1h)
-    t1m = summarize_technical_lines_to_score(sig_1m)
+    signals_by_tf: Dict[str, TechnicalLinesSnapshot] = {}
+    summary_by_tf: Dict[str, Dict[str, Any]] = {}
+    score_by_tf: Dict[str, float] = {}
 
-    score_4h = float(t4h["score"])
-    score_1h = float(t1h["score"])
-    score_1m = float(t1m["score"])
+    for tf in timeframes:
+        sig = analyze_technical_lines_single_tf(df_map.get(tf))
+        signals_by_tf[tf] = sig
 
-    # 多周期汇总：大周期权重更大，小周期更偏“触发”
-    score = 0.5 * score_4h + 0.35 * score_1h + 0.15 * score_1m
+        summ = summarize_technical_lines_to_score(sig)
+        summary_by_tf[tf] = summ
 
-    ticker = (market_data.get("metrics") or {}).get("ticker") or {}
+        # summ["score"] 始终存在（数据不足时为 0），这里统一转换成 float
+        score_by_tf[tf] = float(summ.get("score") or 0.0)
+
+    # =========================
+    # 1) 多周期汇总 score（核心+背景）
+    # =========================
+    # 核心（更偏“交易决策”）：4h/1h/1m
+    # 背景（更偏“大方向过滤”）：1d/1w
+    #
+    # 这样既满足“拿全”，又避免长周期完全盖过短周期的触发逻辑。
+    score_core = (
+        0.5 * score_by_tf.get("4h", 0.0)
+        + 0.35 * score_by_tf.get("1h", 0.0)
+        + 0.15 * score_by_tf.get("1m", 0.0)
+    )
+    score_bg = 0.5 * score_by_tf.get("1d", 0.0) + 0.5 * score_by_tf.get("1w", 0.0)
+    score = 0.8 * score_core + 0.2 * score_bg
+
+    # 方便你调试：把每个周期的分数串起来（证明“确实拿全了”）
+    tf_score_str = ", ".join([f"{tf}={score_by_tf.get(tf, 0.0):.2f}" for tf in timeframes])
+
+    ticker = market_data.metrics.ticker or {}
     last = ticker.get("last")
     last_px = float(last) if last is not None else _last_close(df_map.get("1m")) or _last_close(df_map.get("1h"))
     if last_px is None:
@@ -73,16 +104,15 @@ def generate_trade_plan(
     trigger_long, trigger_short = _entry_trigger_1m(df_map.get("1m"))
 
     # 盘口微观结构（可选加分/过滤）
-    metrics = market_data.get("metrics") or {}
-    ob_imb = float(metrics.get("order_book_imbalance") or 0.0)
-    spread_bps = float(metrics.get("spread_bps") or 0.0)
+    ob_imb = float(market_data.metrics.order_book_imbalance or 0.0)
+    spread_bps = float(market_data.metrics.spread_bps or 0.0)
 
     # 基础过滤：点差太大直接不做（防止流动性差时误触发）
     if spread_bps and spread_bps > 12:
         return TradePlan(symbol=symbol, action="HOLD", reason=f"点差过大({spread_bps:.1f}bps)，跳过", score=score)
 
-    # 用 1h ATR 设定止损止盈
-    atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h"))
+    # 用 1h ATR 设定止损止盈（如果缺失则降级用 4h/1d）
+    atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h")) or _last_atr(df_map.get("1d"))
     if atr is None or atr <= 0:
         return TradePlan(symbol=symbol, action="HOLD", reason="ATR 不足，无法设置风控", score=score)
 
@@ -117,7 +147,9 @@ def generate_trade_plan(
             stop_loss=sl,
             leverage=cfg.leverage,
         )
-        reason = f"score={score:.2f} (4h={score_4h:.2f},1h={score_1h:.2f},1m={score_1m:.2f})"
+        # 这里把“全周期得分”放进 reason，方便你复盘为什么会开仓
+        reason = f"score={score:.2f} (core={score_core:.2f},bg={score_bg:.2f})"
+        reason += f" [{tf_score_str}]"
         reason += f"，ATR={atr:.2f}，OB_imb={ob_imb:.2f}"
         return TradePlan(
             symbol=symbol,
@@ -139,7 +171,7 @@ def generate_trade_plan(
             action="CLOSE",
             direction=pos_side if pos_side in ("long", "short") else None,
             close_amount=float(pos_size or 0.0),
-            reason=f"趋势反转/衰减：score={score:.2f}",
+            reason=f"趋势反转/衰减：score={score:.2f} [{tf_score_str}]",
             score=float(score),
         )
 
