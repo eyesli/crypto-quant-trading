@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
+from pprint import pformat
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
-from pprint import pformat
 
 from src.config import TIMEFRAME_SETTINGS
 from src.market_data import AccountOverview
@@ -50,13 +50,11 @@ def _validate_timeframe_weights(timeframes: list[str]) -> dict[str, float]:
     return weights
 
 
-
 def generate_trade_plan(
         account_overview: AccountOverview,
         market_data: MarketDataSnapshot,
         cfg: StrategyConfig,
 ) -> TradePlan:
-
     symbol = market_data.symbol or cfg.symbol
     df_map: Dict[str, pd.DataFrame] = market_data.ohlcv_df
 
@@ -74,8 +72,8 @@ def generate_trade_plan(
     score_by_tf: Dict[str, float] = {}
 
     for tf in timeframes:
-        #根据指标 进一步分析 经济逻辑
-        sig:TechnicalLinesSnapshot = analyze_technical_lines_single_tf(df_map.get(tf))
+        # 根据指标 进一步分析 经济逻辑
+        sig: TechnicalLinesSnapshot = analyze_technical_lines_single_tf(df_map.get(tf))
         signals_by_tf[tf] = sig
 
         summ = summarize_technical_lines_to_score(sig)
@@ -131,6 +129,11 @@ def generate_trade_plan(
     # 基础过滤：点差太大直接不做（防止流动性差时误触发）
     if spread_bps and spread_bps > 12:
         return TradePlan(symbol=symbol, action="HOLD", reason=f"点差过大({spread_bps:.1f}bps)，跳过", score=score)
+
+    # todo 初始止损 = 1.0 × ATR(1h)
+    #
+    # 浮盈 > 1.0 × ATR → 止损上移至 breakeven
+    # 浮盈 > 2.0 × ATR → Trailing = 1.0 × ATR
 
     # 用 1h ATR 设定止损止盈（如果缺失则降级用 4h/1d）
     atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h")) or _last_atr(df_map.get("1d"))
@@ -664,7 +667,6 @@ def summarize_technical_lines_to_score(signals: TechnicalLinesSnapshot) -> Dict[
         label = "强空头趋势"
 
     return {"score": score, "label": label, "regime": regime, "detail": "；".join(notes), "components": components}
-
 
 
 def _equity_usdc(account: AccountOverview) -> float:
