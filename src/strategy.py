@@ -8,23 +8,28 @@
 from __future__ import annotations
 
 from pprint import pformat
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import pandas as pd
 
 from src.config import TIMEFRAME_SETTINGS
 from src.market_data import AccountOverview
 from src.models import (
-    MarketDataSnapshot,
     BreakoutSignal,
+    ConfidenceEvaluation,
+    EdgeDecision,
+    MarketDataSnapshot,
     MomentumSignal,
     OverheatSignal,
     PositionSide,
+    RegimeDecision,
+    RiskAssessment,
     StrategyConfig,
     StructureCostSignal,
     TechnicalLinesSnapshot,
     TradePlan,
     TrendLineSignal,
+    TriggerDecision,
     VolatilitySignal,
     VolumeConfirmationSignal,
 )
@@ -107,7 +112,6 @@ def generate_trade_plan(
     tf_weights = _validate_timeframe_weights(timeframes)
     score = sum(tf_weights[tf] * score_by_tf.get(tf, 0.0) for tf in timeframes)
 
-    # 方便你调试：把每个周期的分数串起来（证明“确实拿全了”）
     tf_score_str = ", ".join([f"{tf}={score_by_tf.get(tf, 0.0):.2f}" for tf in timeframes])
     tf_weight_str = ", ".join([f"{tf}={tf_weights.get(tf, 0.0):.2f}" for tf in timeframes])
 
@@ -117,125 +121,159 @@ def generate_trade_plan(
     if last_px is None:
         return TradePlan(symbol=symbol, action="HOLD", reason="无法获取当前价格", score=score)
 
-    pos_side, pos_size = _current_position(account_overview, symbol)
-
-    # 1m 触发：避免每根 bar 都重复触发
-    trigger_long, trigger_short = _entry_trigger_1m(df_map.get("1m"))
-
-    # 盘口微观结构（可选加分/过滤）
-    ob_imb = float(market_data.metrics.order_book_imbalance or 0.0)
-    spread_bps = float(market_data.metrics.spread_bps or 0.0)
-
-    # 基础过滤：点差太大直接不做（防止流动性差时误触发）
-    if spread_bps and spread_bps > 12:
-        return TradePlan(symbol=symbol, action="HOLD", reason=f"点差过大({spread_bps:.1f}bps)，跳过", score=score)
-
-    # todo 初始止损 = 1.0 × ATR(1h)
-    #
-    # 浮盈 > 1.0 × ATR → 止损上移至 breakeven
-    # 浮盈 > 2.0 × ATR → Trailing = 1.0 × ATR
-
-    # 用 1h ATR 设定止损止盈（如果缺失则降级用 4h/1d）
     atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h")) or _last_atr(df_map.get("1d"))
-    if atr is None or atr <= 0:
-        return TradePlan(symbol=symbol, action="HOLD", reason="ATR 不足，无法设置风控", score=score)
-
-    # --- 决策：开仓 / 平仓 / 反手 ---
-    long_bias = score >= cfg.min_score_to_open and trigger_long
-    short_bias = score <= -cfg.min_score_to_open and trigger_short
-
-    # 盘口倾斜可作为“加分确认”
-    if long_bias and ob_imb < -0.15:
-        long_bias = False
-    if short_bias and ob_imb > 0.15:
-        short_bias = False
-
-    # 计算账户权益
+    spread_bps = float(market_data.metrics.spread_bps or 0.0)
+    ob_imb = float(market_data.metrics.order_book_imbalance or 0.0)
+    pos_side, pos_size = _current_position(account_overview, symbol)
+    trigger_long, trigger_short = _entry_trigger_1m(df_map.get("1m"))
     equity = _equity_usdc(account_overview)
-    if equity <= 0:
-        return TradePlan(symbol=symbol, action="HOLD", reason="权益为 0，跳过", score=score)
 
-    # 目标：开仓数量（根据 stop 距离风险定仓）
-    def build_open(direction: PositionSide) -> TradePlan:
-        if direction == "long":
-            sl = last_px - cfg.atr_stop_mult * atr
-            tp = last_px + cfg.atr_tp_mult * atr
-        else:
-            sl = last_px + cfg.atr_stop_mult * atr
-            tp = last_px - cfg.atr_tp_mult * atr
+    regime = _evaluate_regime(signals_by_tf, summary_by_tf, tf_weights)
+    edge = _evaluate_edge(score, score_by_tf, tf_weights, regime)
+    confidence = _evaluate_confidence(signals_by_tf, score_by_tf, edge)
+    risk_assessment = _assess_risk(
+        cfg=cfg,
+        equity=equity,
+        edge=edge,
+        atr=atr,
+        last_px=last_px,
+        spread_bps=spread_bps,
+        ob_imb=ob_imb,
+    )
+    trigger = _decide_trigger(
+        pos_side=pos_side,
+        pos_size=pos_size,
+        edge=edge,
+        confidence=confidence,
+        risk=risk_assessment,
+        desired_size=risk_assessment.position_size,
+        trigger_long=trigger_long,
+        trigger_short=trigger_short,
+        cfg=cfg,
+    )
 
-        sizing = calc_amount_from_risk(
-            equity=equity,
-            risk_pct=cfg.risk_pct,
-            entry_price=last_px,
-            stop_loss=sl,
-            leverage=cfg.leverage,
-        )
-        # 这里把“全周期得分 + 权重”放进 reason，方便你复盘为什么会开仓
-        reason = f"score={score:.2f}"
-        reason += f" [scores: {tf_score_str}]"
-        reason += f" [weights: {tf_weight_str}]"
-        reason += f"，ATR={atr:.2f}，OB_imb={ob_imb:.2f}"
+    # 最终行动
+    if not trigger.ready:
+        return TradePlan(symbol=symbol, action="HOLD", reason=trigger.reason, score=score)
+
+    def build_open(direction: PositionSide, amount: float | None = None) -> TradePlan:
+        sl = risk_assessment.stop_loss
+        tp = risk_assessment.take_profit
         return TradePlan(
             symbol=symbol,
             action="OPEN",
             direction=direction,
             order_type="market",
             entry_price=None,
-            open_amount=float(sizing.amount),
-            stop_loss=float(sl),
-            take_profit=float(tp),
+            open_amount=float(amount if amount is not None else risk_assessment.position_size),
+            stop_loss=sl,
+            take_profit=tp,
+            reason=(
+                f"Regime={regime.regime}({regime.confidence:.2f}); "
+                f"Edge={edge.direction}({edge.edge_score:.2f}); "
+                f"Confidence={confidence.quality}({confidence.confidence_score:.2f}); "
+                f"Risk={risk_assessment.reason}; scores[{tf_score_str}]; weights[{tf_weight_str}]"
+            ),
+            score=float(score),
+        )
+
+    def build_add(direction: PositionSide, add_amount: float, reason: str) -> TradePlan:
+        return TradePlan(
+            symbol=symbol,
+            action="ADD",
+            direction=direction,
+            order_type="market",
+            open_amount=float(max(add_amount, 0.0)),
+            stop_loss=risk_assessment.stop_loss,
+            take_profit=risk_assessment.take_profit,
             reason=reason,
             score=float(score),
         )
 
-    # 平仓计划：数量用当前仓位数量（如果拿不到就用 0，执行器会跳过）
-    def build_close() -> TradePlan:
+    def build_close(reason: str) -> TradePlan:
         return TradePlan(
             symbol=symbol,
             action="CLOSE",
             direction=pos_side if pos_side in ("long", "short") else None,
             close_amount=float(pos_size or 0.0),
-            reason=f"趋势反转/衰减：score={score:.2f} [{tf_score_str}]",
+            reason=reason,
             score=float(score),
         )
 
-    # 反手：先平后开（执行器会先发 reduceOnly 市价再开仓）
     def build_flip(new_dir: PositionSide) -> TradePlan:
         open_plan = build_open(new_dir)
         return TradePlan(
             symbol=symbol,
             action="FLIP",
-            close_direction=pos_side,  # 先平旧方向
-            direction=new_dir,  # 再开新方向
+            close_direction=pos_side,
+            direction=new_dir,
             order_type=open_plan.order_type,
             entry_price=open_plan.entry_price,
             close_amount=float(pos_size or 0.0),
             open_amount=open_plan.open_amount,
             stop_loss=open_plan.stop_loss,
             take_profit=open_plan.take_profit,
-            reason=f"反手：pos={pos_side} -> {new_dir}，" + open_plan.reason,
+            reason=f"反手：{trigger.reason}; " + open_plan.reason,
             score=open_plan.score,
         )
 
+    # 核心规模参考
+    target_size = float(risk_assessment.position_size)
+    min_gap = max(target_size * cfg.scale_in_min_gap_pct, 0.0)
+    scale_step = max(target_size * cfg.scale_in_step_pct, 0.0)
+    over_target_line = target_size * (1 + cfg.reduce_over_target_pct)
+    reduce_step = max(target_size * cfg.reduce_step_pct, 0.0)
+
     if pos_side == "flat":
-        if long_bias:
+        if edge.direction == "long" and trigger_long:
             return build_open("long")
-        if short_bias:
+        if edge.direction == "short" and trigger_short:
             return build_open("short")
         return TradePlan(symbol=symbol, action="HOLD", reason="无有效入场触发", score=score)
 
-    # 已持仓：反手优先
-    if pos_side == "long" and score <= -cfg.min_score_to_flip and trigger_short:
+    if pos_side == "long" and edge.direction == "short" and trigger_short:
         return build_flip("short")
-    if pos_side == "short" and score >= cfg.min_score_to_flip and trigger_long:
+    if pos_side == "short" and edge.direction == "long" and trigger_long:
         return build_flip("long")
 
-    # 趋势明显走坏则平仓
+    if pos_side == edge.direction:
+        # 分步加仓：只有当“目标仓位-现有仓位”达到缺口阈值，且分数/质量达标
+        if (
+            target_size > 0
+            and target_size - pos_size > min_gap
+            and edge.edge_score >= cfg.min_score_to_add
+            and confidence.quality != "low"
+        ):
+            add_amt = min(target_size - pos_size, scale_step)
+            return build_add(
+                direction=edge.direction,
+                add_amount=add_amt,
+                reason=(
+                    f"分步加仓：目标仓位={target_size:.4f}, 现有={pos_size:.4f}, 缺口={target_size - pos_size:.4f}; "
+                    f"Edge={edge.edge_score:.2f}, Confidence={confidence.confidence_score:.2f}"
+                ),
+            )
+
+        # 减仓：当实际仓位明显超出风险建议仓位时，先砍掉超额的一半
+        if pos_size > over_target_line and reduce_step > 0:
+            reduce_amt = min(pos_size - target_size, reduce_step)
+            return TradePlan(
+                symbol=symbol,
+                action="REDUCE",
+                direction=pos_side,
+                close_amount=float(max(reduce_amt, 0.0)),
+                stop_loss=risk_assessment.stop_loss,
+                take_profit=risk_assessment.take_profit,
+                reason=(
+                    f"仓位超出风险预算：当前={pos_size:.4f} > 目标={target_size:.4f}，减仓 {reduce_amt:.4f}"
+                ),
+                score=float(score),
+            )
+
     if pos_side == "long" and score < -0.2:
-        return build_close()
+        return build_close("多头衰减，执行平仓")
     if pos_side == "short" and score > 0.2:
-        return build_close()
+        return build_close("空头衰减，执行平仓")
 
     return TradePlan(symbol=symbol, action="HOLD", reason="持仓中，信号不足以调整", score=score)
 
@@ -667,6 +705,183 @@ def summarize_technical_lines_to_score(signals: TechnicalLinesSnapshot) -> Dict[
         label = "强空头趋势"
 
     return {"score": score, "label": label, "regime": regime, "detail": "；".join(notes), "components": components}
+
+
+def _evaluate_regime(
+        signals_by_tf: Dict[str, TechnicalLinesSnapshot],
+        summary_by_tf: Dict[str, Dict[str, Any]],
+        tf_weights: Dict[str, float],
+) -> RegimeDecision:
+    regime_map = {"trend": 1.0, "range": -1.0, "mixed": 0.0}
+    weighted = 0.0
+    total_weight = 0.0
+    drivers: list[str] = []
+
+    for tf, summ in summary_by_tf.items():
+        weight = tf_weights.get(tf, 0.0)
+        regime = summ.get("regime")
+        val = regime_map.get(regime, 0.0)
+        weighted += val * weight
+        total_weight += weight
+        sig = signals_by_tf.get(tf)
+        if sig and isinstance(sig.adx, (int, float)):
+            drivers.append(f"{tf}:ADX={sig.adx:.1f}->{regime}")
+
+    norm = weighted / total_weight if total_weight else 0.0
+    confidence = abs(norm)
+    if norm > 0.05:
+        regime_label = "trend"
+    elif norm < -0.05:
+        regime_label = "range"
+    else:
+        regime_label = "mixed"
+
+    return RegimeDecision(regime=regime_label, confidence=float(confidence), drivers="; ".join(drivers))
+
+
+def _evaluate_edge(
+        score: float,
+        score_by_tf: Dict[str, float],
+        tf_weights: Dict[str, float],
+        regime: RegimeDecision,
+) -> EdgeDecision:
+    direction: PositionSide = "flat"
+    if score >= 0.2:
+        direction = "long"
+    elif score <= -0.2:
+        direction = "short"
+
+    align_weight = 0.0
+    total_weight = 0.0
+    for tf, tf_score in score_by_tf.items():
+        w = tf_weights.get(tf, 0.0)
+        total_weight += w
+        if direction == "long" and tf_score > 0:
+            align_weight += w
+        elif direction == "short" and tf_score < 0:
+            align_weight += w
+        elif direction == "flat" and abs(tf_score) < 0.1:
+            align_weight += w * 0.5
+    alignment = align_weight / total_weight if total_weight else 0.0
+
+    rationale_parts = [f"总分={score:.2f}", f"Regime={regime.regime}({regime.confidence:.2f})"]
+    rationale_parts.append(f"多空一致性={alignment:.2f}")
+    return EdgeDecision(direction=direction, edge_score=float(score), alignment=float(alignment), rationale="; ".join(rationale_parts))
+
+
+def _evaluate_confidence(
+        signals_by_tf: Dict[str, TechnicalLinesSnapshot],
+        score_by_tf: Dict[str, float],
+        edge: EdgeDecision,
+) -> ConfidenceEvaluation:
+    if edge.direction == "flat":
+        return ConfidenceEvaluation(quality="low", confidence_score=0.25, notes="无明显方向优势")
+
+    ok_tfs = [tf for tf, sig in signals_by_tf.items() if sig.ok]
+    data_quality = len(ok_tfs) / max(len(signals_by_tf), 1)
+
+    sign_match = 0.0
+    for tf, val in score_by_tf.items():
+        if edge.direction == "long" and val > 0:
+            sign_match += 1
+        elif edge.direction == "short" and val < 0:
+            sign_match += 1
+    alignment = sign_match / max(len(score_by_tf), 1)
+
+    momentum_confirm = 0.0
+    for sig in signals_by_tf.values():
+        if sig.momentum and sig.momentum.direction:
+            if edge.direction == "long" and sig.momentum.direction > 0:
+                momentum_confirm += 1
+            if edge.direction == "short" and sig.momentum.direction < 0:
+                momentum_confirm += 1
+    momentum_factor = momentum_confirm / max(len(signals_by_tf), 1)
+
+    confidence_score = 0.4 * data_quality + 0.35 * alignment + 0.25 * momentum_factor
+    if confidence_score >= 0.65:
+        quality: Literal["high", "medium", "low"] = "high"
+    elif confidence_score >= 0.45:
+        quality = "medium"
+    else:
+        quality = "low"
+
+    notes = (
+        f"数据覆盖={data_quality:.2f}; 多空一致性={alignment:.2f}; "
+        f"动能确认={momentum_factor:.2f}"
+    )
+    return ConfidenceEvaluation(quality=quality, confidence_score=float(confidence_score), notes=notes)
+
+
+def _assess_risk(
+        cfg: StrategyConfig,
+        equity: float,
+        edge: EdgeDecision,
+        atr: Optional[float],
+        last_px: float,
+        spread_bps: float,
+        ob_imb: float,
+) -> RiskAssessment:
+    if edge.direction == "flat":
+        return RiskAssessment(allowed=False, reason="无方向优势，跳过")
+    if spread_bps and spread_bps > 12:
+        return RiskAssessment(allowed=False, reason=f"点差过大({spread_bps:.1f}bps)")
+    if atr is None or atr <= 0:
+        return RiskAssessment(allowed=False, reason="ATR 不足，无法设置风控")
+    if equity <= 0:
+        return RiskAssessment(allowed=False, reason="账户权益不足")
+
+    if edge.direction == "long":
+        sl = last_px - cfg.atr_stop_mult * atr
+        tp = last_px + cfg.atr_tp_mult * atr
+    else:
+        sl = last_px + cfg.atr_stop_mult * atr
+        tp = last_px - cfg.atr_tp_mult * atr
+
+    sizing = calc_amount_from_risk(
+        equity=equity,
+        risk_pct=cfg.risk_pct,
+        entry_price=last_px,
+        stop_loss=sl,
+        leverage=cfg.leverage,
+    )
+
+    reason_parts = [f"ATR={atr:.2f}", f"点差={spread_bps:.1f}bps", f"OB倾斜={ob_imb:.2f}"]
+    return RiskAssessment(
+        allowed=True,
+        reason="; ".join(reason_parts),
+        stop_loss=float(sl),
+        take_profit=float(tp),
+        position_size=float(sizing.amount),
+    )
+
+
+def _decide_trigger(
+        pos_side: PositionSide,
+        pos_size: float,
+        edge: EdgeDecision,
+        confidence: ConfidenceEvaluation,
+        risk: RiskAssessment,
+        desired_size: float,
+        trigger_long: bool,
+        trigger_short: bool,
+        cfg: StrategyConfig,
+) -> TriggerDecision:
+    if not risk.allowed:
+        return TriggerDecision(ready=False, reason=risk.reason)
+    if confidence.quality == "low":
+        return TriggerDecision(ready=False, reason=f"信号质量偏低：{confidence.notes}")
+    if edge.direction == "long" and not trigger_long:
+        return TriggerDecision(ready=False, reason="缺少多头触发")
+    if edge.direction == "short" and not trigger_short:
+        return TriggerDecision(ready=False, reason="缺少空头触发")
+    if pos_side == edge.direction and pos_size > 0:
+        gap = max(desired_size - pos_size, 0.0)
+        if gap <= max(desired_size * cfg.scale_in_min_gap_pct, 0.0):
+            return TriggerDecision(ready=False, reason="已有同向仓位，未触发加仓缺口")
+    if edge.edge_score < cfg.min_score_to_open:
+        return TriggerDecision(ready=False, reason="总分未达到入场阈值")
+
+    return TriggerDecision(ready=True, reason="阶段化判断全部通过")
 
 
 def _equity_usdc(account: AccountOverview) -> float:

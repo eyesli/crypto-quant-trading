@@ -8,7 +8,7 @@ from ccxt.base.types import Any, OrderBook
 
 Side = Literal["buy", "sell"]
 PositionSide = Literal["long", "short", "flat"]
-PlanAction = Literal["OPEN", "CLOSE", "HOLD", "FLIP"]
+PlanAction = Literal["OPEN", "ADD", "REDUCE", "CLOSE", "HOLD", "FLIP"]
 OrderType = Literal["market", "limit"]
 
 
@@ -22,8 +22,8 @@ class TradePlan:
     action: PlanAction
 
     # 方向语义：
-    # - OPEN: direction = 开仓方向
-    # - CLOSE: direction = 当前持仓方向（将被平掉）
+    # - OPEN/ADD: direction = 开仓/加仓方向
+    # - REDUCE/CLOSE: direction = 当前持仓方向（被减仓/平仓）
     # - FLIP:  close_direction = 当前持仓方向；direction = 新开仓方向
     direction: Optional[PositionSide] = None  # "long" or "short"
     close_direction: Optional[PositionSide] = None
@@ -52,9 +52,61 @@ class StrategyConfig:
     leverage: float = 5.0  # 只用于“最大名义仓位”约束（不直接放大 PnL 计算）
     min_score_to_open: float = 0.35
     min_score_to_flip: float = 0.55
+    min_score_to_add: float = 0.45
     atr_stop_mult: float = 1.5
     atr_tp_mult: float = 3.0
     cooldown_bars_1m: int = 3  # 防止 1m 上过度频繁交易
+    scale_in_min_gap_pct: float = 0.25  # 只有当“目标仓位-当前仓位”达到目标仓位的 25% 才考虑加仓
+    scale_in_step_pct: float = 0.5  # 加仓时只补足缺口的一半，分步金字塔
+    reduce_over_target_pct: float = 0.2  # 当前仓位超过风险建议仓位 20% 时触发减仓
+    reduce_step_pct: float = 0.5  # 减仓力度，默认砍掉超额部分的一半
+
+
+@dataclass(frozen=True)
+class RegimeDecision:
+    """市场状态判断（Regime）。"""
+
+    regime: str
+    confidence: float
+    drivers: str = ""
+
+
+@dataclass(frozen=True)
+class EdgeDecision:
+    """方向优势判断（Edge）。"""
+
+    direction: PositionSide
+    edge_score: float
+    alignment: float
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
+class ConfidenceEvaluation:
+    """信号质量评估（Confidence）。"""
+
+    quality: Literal["high", "medium", "low"]
+    confidence_score: float
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class RiskAssessment:
+    """风险/执行约束（Risk）。"""
+
+    allowed: bool
+    reason: str = ""
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    position_size: float = 0.0
+
+
+@dataclass(frozen=True)
+class TriggerDecision:
+    """执行触发（Trigger）。"""
+
+    ready: bool
+    reason: str = ""
 
 
 @dataclass(frozen=True)
