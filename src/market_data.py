@@ -6,25 +6,19 @@
 - 多周期 OHLCV 拉取是典型网络 I/O，可用线程池并发加速。
 - 但并发也可能触发限频或暴露交易所适配的“线程不安全”问题，默认使用小并发。
 """
-from dataclasses import dataclass
-from datetime import datetime
-from typing import List, Literal, Any
-
-from ccxt import hyperliquid
-from ccxt.base.types import Position, Balances
-import ccxt
-
-from typing import Any, Optional, Dict
-
 import math
+from dataclasses import dataclass
+from typing import List, Literal
+from typing import Optional
+
+import ccxt
 import pandas as pd
 import pandas_ta as ta
+from ccxt import hyperliquid
+from ccxt.base.types import Position, Balances
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.models import OrderBookInfo
 
-from models import MarketMetrics, OrderBookInfo
-from src.config import OHLCV_FETCH_MAX_WORKERS, TIMEFRAME_SETTINGS
-from src.models import MarketDataSnapshot, MarketMetrics
 
 @dataclass
 class AccountOverview:
@@ -38,6 +32,16 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["adx_14"] = adx_df["ADX_14"]
 
     df["atr_14"] = ta.atr(high, low, close, length=14)
+
+    #最近一段时间，每根 1h K，价格平均会波动大约["natr_14"] 例如  0.8%
+    '''
+    NATR（%）	市场感觉
+    < 0.4%	     非常安静
+    0.4–0.8%	 正常
+    0.8–1.2%	 偏活跃
+    > 1.2%	     很猛 / 容易扫
+    '''
+
     df["natr_14"] = df["atr_14"] / close
 
     bbands = ta.bbands(close, length=20, std=2.0)
@@ -45,7 +49,7 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
-    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标 1,2,3,4 「布林带宽度约等于价格的 1%–4%」
     df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
 
     return df
@@ -247,14 +251,27 @@ def fetch_order_book_info(exchange: hyperliquid,symbol: str) -> OrderBookInfo:
         asks = order_book.get("asks") or []
         best_bid = float(bids[0][0]) if bids else None
         best_ask = float(asks[0][0]) if asks else None
+
         if best_bid and best_ask and best_ask > 0:
             spread = best_ask - best_bid
-            spread_bps = (best_ask - best_bid) / best_ask * 10_000
+            mid = (best_ask + best_bid) / 2
+            spread_bps = spread / mid * 10_000
 
         depth_levels = 20
+        #买盘前 N 档的总量
         bid_depth = sum(float(px_qty[1]) for px_qty in bids[:depth_levels]) if bids else 0.0
+        #卖盘前 N 档的总量
         ask_depth = sum(float(px_qty[1]) for px_qty in asks[:depth_levels]) if asks else 0.0
         denom = bid_depth + ask_depth
+        #哪一边更厚[-1, +1]
+        # +0.6 买盘明显更厚
+        # +0.2 买盘略占优
+        # 0 基本平衡
+        # -0.3 卖盘略占优
+        # -0.7 卖盘明显更厚
+        # abs(imbalance) <= 0.85 正常 > 0.85 预警  > 0.9叠加其他异常
+        #作为执行风险过滤（辅助） 不确定性很大,盘口是“假象最多”的一层 所以只能做风险过滤 imbalance 极端 执行风险高
+        # 默认只做预警（warning）只有在「叠加其他异常」时，才升级为禁止下单（hard no-trade）
         imbalance = (bid_depth - ask_depth) / denom if denom else 0.0
     except Exception:
         # 盘口数据是“锦上添花”，不让它影响主流程

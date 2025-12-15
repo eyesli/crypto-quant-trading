@@ -303,8 +303,13 @@ class OrderBookInfo:
     # - 失效边界：快市下 bid/ask 变化很快，单次采样可能失真。
     spread: Optional[float] = None
 
-    # spread_bps：点差按基点(bps=万分之一)标准化：spread / best_ask * 10000。
+    # spread_bps：点差按基点(bps=万分之一)标准化：spread / mid * 10000。
     #
+    #
+    # ＜ 5 bps	极佳流动性	交易成本极低，如同在银行间市场交易。
+    # 5 - 15 bps	正常良好	流动性高，是主要资产（如主流股票、主要外汇对）在正常交易时间的常见状态。
+    # 20 - 50 bps	一般流动性	交易量较低的时段或小市值资产。
+    # ＞ 50 bps	流动性差	交易成本高，滑点风险大，通常出现在非活跃时段或交易不活跃的小币种、冷门股票。
     # - 经济逻辑：跨价格水平可比的成本指标；常用于“点差过滤”（太大就不交易）。
     # - 失效边界：best_ask 缺失或异常时不可用。
     spread_bps: Optional[float] = None

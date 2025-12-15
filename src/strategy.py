@@ -793,6 +793,7 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     波动状态（Regime 子模块）：
     - 用 NATR + BB Width 两个“独立波动视角”做一致性判定
     - 输出 low/normal/high，用于策略许可与风险缩放
+    todo 有没有必要分细一点
     """
     if df is None or "natr_14" not in df.columns or "bb_width" not in df.columns:
         return "unknown", {}
@@ -803,17 +804,25 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
         return "unknown", {}
 
     # 统一取近端窗口（大约一周+）
+    #现在的波动，是处在自己历史里的“偏低 / 正常 / 偏高”哪个档位
     w_natr = natr.iloc[-200:]
     w_bbw = bbw.iloc[-200:]
 
+    #价格实际振幅
+    #在最近 200 根里，找出“最安静的 20% 波动水平”
     n_cur = float(w_natr.iloc[-1])
     n_p20 = float(w_natr.quantile(0.2))
+    #在最近 200 根里，找出“最吵的 20% 波动水平”
     n_p80 = float(w_natr.quantile(0.8))
     n_state = _q_state(n_cur, n_p20, n_p80)
 
+    #价格分布是不是已经被撑开
     b_cur = float(w_bbw.iloc[-1])
+    #布林带“非常收紧”的历史水平
     b_p20 = float(w_bbw.quantile(0.2))
+    #布林带“明显张开”的历史水平
     b_p80 = float(w_bbw.quantile(0.8))
+    #判断当前布林结构是低 / 中 / 高波动
     b_state = _q_state(b_cur, b_p20, b_p80)
 
     # 一致性判定：两者一致 → 置信度高

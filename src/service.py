@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import ccxt
 
-from market_data import fetch_order_book_info
-from src.execution import execute_trade_plan
-from src.market_data import fetch_account_overview, ohlcv_to_df, add_regime_indicators, \
-    classify_trend_range
-from src.models import ExecutionConfig, StrategyConfig, MarketDataSnapshot, TradePlan
-from src.strategy import generate_trade_plan, classify_vol_state, decide_regime_with_no_trade
+
+from src.market_data import ohlcv_to_df, add_regime_indicators, \
+    classify_trend_range, fetch_order_book_info
+from src.models import ExecutionConfig, StrategyConfig
+from src.strategy import classify_vol_state, decide_regime_with_no_trade
 
 # =========================
 # 直接硬编码配置（按你的要求）
@@ -46,6 +45,7 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     indicators = add_regime_indicators(df)
     base, adx = classify_trend_range(indicators)
     vol_state, vol_dbg = classify_vol_state(indicators)
+    print(vol_dbg)
     order_book = fetch_order_book_info(exchange,SYMBOL)
     regime = decide_regime_with_no_trade(base, adx, vol_state, order_book.spread_bps,12)
     # todo 还缺的 3 个关键点 缺一个“流动性/成交量”或“盘口稳定性”维度 Soft No-Trade 现在“过于一刀切” 你传入了 adx，但完全没用到
