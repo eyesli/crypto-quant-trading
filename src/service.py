@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ccxt
 
 
 from src.market_data import ohlcv_to_df, add_regime_indicators, \
     classify_trend_range, fetch_order_book_info, classify_timing_state
-from src.models import ExecutionConfig, StrategyConfig
+from src.models import ExecutionConfig, StrategyConfig, MarketRegime, RegimeState
 from src.strategy import classify_vol_state, decide_regime
 
 
@@ -17,23 +19,14 @@ RISK_PCT = 0.01
 LEVERAGE = 5.0
 
 
-def start_trade(exchange: ccxt.hyperliquid) -> None:
+
+def start_trade(exchange: ccxt.hyperliquid,state: RegimeState) -> None:
     """
     单轮运行：
     - 拉取账户 + 市场数据
     - 策略生成 TradePlan
     - 执行器（可 DRY_RUN）
     """
-    strategy_cfg = StrategyConfig(
-        symbol=SYMBOL,
-        risk_pct=RISK_PCT,
-        leverage=LEVERAGE,
-    )
-    exec_cfg = ExecutionConfig(
-        dry_run=DRY_RUN,
-        slippage=LOOP_SLIPPAGE,
-        post_only=POST_ONLY,
-    )
 
     # account_overview = fetch_account_overview(exchange)
     # market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
@@ -41,9 +34,10 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     data = exchange.fetch_ohlcv(SYMBOL, "1h", limit=500)
     df = ohlcv_to_df(data)
     indicators = add_regime_indicators(df)
-    base, adx = classify_trend_range(indicators)
+    base, adx = classify_trend_range(df=indicators, prev=state.prev_base)
+
     vol_state, vol_dbg = classify_vol_state(indicators)
-    timing = classify_timing_state(df)
+    timing = classify_timing_state(indicators)
     print(vol_dbg)
     print(timing)
     order_book = fetch_order_book_info(exchange,SYMBOL)
@@ -55,7 +49,7 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     # interest = exchange.fetch_open_interest(SYMBOL)
 
     print("🧭 regime:", regime)
-
+    state.prev_base = base
     # decide_regime();
     # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     # print(plan.score)

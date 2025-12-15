@@ -70,13 +70,19 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 BaseRegime = Literal["trend", "range", "mixed", "unknown"]
 
-def classify_trend_range(df: pd.DataFrame) -> tuple[MarketRegime, Optional[float]]:
+def classify_trend_range(
+    df: pd.DataFrame,
+    prev: MarketRegime = MarketRegime.UNKNOWN,
+) -> tuple[MarketRegime, Optional[float]]:
     """
-    Regime: Trend / Range / Mixed
-    逻辑语义：
-    - ADX 高 → 有趋势
-    - ADX 低 → 无趋势（震荡）
-    - 中间 → 混合
+    Regime: TREND / RANGE / MIXED (with hysteresis)
+
+    - Enter TREND: ADX >= 26
+    - Exit  TREND: ADX < 23
+    - Enter RANGE: ADX <= 17
+    - Exit  RANGE: ADX > 19
+
+    prev: 上一次的 regime，用于迟滞（防抖）
     """
     if df is None or "adx_14" not in df.columns:
         return MarketRegime.UNKNOWN, None
@@ -87,12 +93,26 @@ def classify_trend_range(df: pd.DataFrame) -> tuple[MarketRegime, Optional[float
 
     adx = float(s.iloc[-1])
 
-    if adx >= 25:
+    # ---------- Hysteresis ----------
+    # 如果上一状态是 TREND：只有明显走弱才退出
+    if prev == MarketRegime.TREND:
+        if adx < 23:
+            return MarketRegime.MIXED, adx
         return MarketRegime.TREND, adx
-    elif adx <= 18:
+
+    # 如果上一状态是 RANGE：只有明显增强才退出
+    if prev == MarketRegime.RANGE:
+        if adx > 19:
+            return MarketRegime.MIXED, adx
         return MarketRegime.RANGE, adx
-    else:
-        return MarketRegime.MIXED, adx
+
+    # ---------- From MIXED / UNKNOWN ----------
+    if adx >= 26:
+        return MarketRegime.TREND, adx
+    if adx <= 17:
+        return MarketRegime.RANGE, adx
+
+    return MarketRegime.MIXED, adx
 
 
 def classify_timing_state(df: pd.DataFrame, window: int = 200, k: float = 0.2) -> Dict:

@@ -6,6 +6,7 @@
 import sys
 import time
 from src.exchange_manager import create_exchange
+from src.models import RegimeState
 from src.service import start_trade
 
 LOOP_SECONDS = 99960
@@ -17,9 +18,9 @@ def main() -> None:
     """
     try:
         exchange = create_exchange()
-
+        state = RegimeState()
         while True:
-            start_trade(exchange)
+            start_trade(exchange,state)
             time.sleep(LOOP_SECONDS)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")

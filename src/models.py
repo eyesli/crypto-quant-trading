@@ -528,3 +528,7 @@ class VolState(str, Enum):
     # - 视为系统信息不足
     # - 直接进入 Hard No-Trade（STOP_ALL）
     UNKNOWN = "unknown"
+
+@dataclass
+class RegimeState:
+    prev_base: MarketRegime = MarketRegime.UNKNOWN
