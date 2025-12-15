@@ -6,11 +6,9 @@ import ccxt
 from src.market_data import ohlcv_to_df, add_regime_indicators, \
     classify_trend_range, fetch_order_book_info
 from src.models import ExecutionConfig, StrategyConfig
-from src.strategy import classify_vol_state, decide_regime_with_no_trade
+from src.strategy import classify_vol_state, decide_regime
 
-# =========================
-# 直接硬编码配置（按你的要求）
-# =========================
+
 SYMBOL = "BTC/USDC:USDC"
 DRY_RUN = True
 LOOP_SLIPPAGE = 0.01
@@ -47,7 +45,7 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     vol_state, vol_dbg = classify_vol_state(indicators)
     print(vol_dbg)
     order_book = fetch_order_book_info(exchange,SYMBOL)
-    regime = decide_regime_with_no_trade(base, adx, vol_state, order_book.spread_bps,12)
+    regime = decide_regime(base, adx, vol_state, order_book,2)
     # todo 还缺的 3 个关键点 缺一个“流动性/成交量”或“盘口稳定性”维度 Soft No-Trade 现在“过于一刀切” 你传入了 adx，但完全没用到
 
     # funding_info = exchange.fetch_funding_rate(SYMBOL)

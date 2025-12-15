@@ -8,7 +8,7 @@ import time
 from src.exchange_manager import create_exchange
 from src.service import start_trade
 
-LOOP_SECONDS = 60
+LOOP_SECONDS = 99960
 
 
 def main() -> None:
@@ -17,10 +17,10 @@ def main() -> None:
     """
     try:
         exchange = create_exchange()
-        start_trade(exchange)
-        # while True:
-        #
-        #     time.sleep(LOOP_SECONDS)
+
+        while True:
+            start_trade(exchange)
+            time.sleep(LOOP_SECONDS)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")
         sys.exit(0)

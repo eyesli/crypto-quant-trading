@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from pprint import pformat
-from typing import Any, Dict, Optional, Tuple, Literal
+from typing import Any, Dict, Optional, Tuple, Literal, List
 
 import pandas as pd
 
@@ -26,7 +26,7 @@ from src.models import (
     TradePlan,
     TrendLineSignal,
     VolatilitySignal,
-    VolumeConfirmationSignal,
+    VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState,
 )
 from src.risk import calc_amount_from_risk
 
@@ -779,14 +779,15 @@ def _entry_trigger_1m(df_1m: Optional[pd.DataFrame]) -> Tuple[bool, bool]:
 #             "reason": f"ADX={adx:.1f}, vol={vol_state}, spread={spread_bps:.1f}bps",
 #             "debug": {"adx": adx, **vol_dbg}}
 
-VolState = Literal["low", "normal", "high", "unknown"]
+
 
 def _q_state(cur: float, p20: float, p80: float) -> VolState:
     if cur <= p20:
-        return "low"
+        return VolState.LOW
     if cur >= p80:
-        return "high"
-    return "normal"
+        return VolState.HIGH
+    return VolState.NORMAL
+
 
 def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     """
@@ -796,33 +797,33 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     todo 有没有必要分细一点
     """
     if df is None or "natr_14" not in df.columns or "bb_width" not in df.columns:
-        return "unknown", {}
+        return VolState.UNKNOWN, {}
 
     natr = df["natr_14"].dropna()
     bbw = df["bb_width"].dropna()
     if len(natr) < 200 or len(bbw) < 200:
-        return "unknown", {}
+        return VolState.UNKNOWN, {}
 
     # 统一取近端窗口（大约一周+）
-    #现在的波动，是处在自己历史里的“偏低 / 正常 / 偏高”哪个档位
+    # 现在的波动，是处在自己历史里的“偏低 / 正常 / 偏高”哪个档位
     w_natr = natr.iloc[-200:]
     w_bbw = bbw.iloc[-200:]
 
-    #价格实际振幅
-    #在最近 200 根里，找出“最安静的 20% 波动水平”
+    # 价格实际振幅
+    # 在最近 200 根里，找出“最安静的 20% 波动水平”
     n_cur = float(w_natr.iloc[-1])
     n_p20 = float(w_natr.quantile(0.2))
-    #在最近 200 根里，找出“最吵的 20% 波动水平”
+    # 在最近 200 根里，找出“最吵的 20% 波动水平”
     n_p80 = float(w_natr.quantile(0.8))
     n_state = _q_state(n_cur, n_p20, n_p80)
 
-    #价格分布是不是已经被撑开
+    # 价格分布是不是已经被撑开
     b_cur = float(w_bbw.iloc[-1])
-    #布林带“非常收紧”的历史水平
+    # 布林带“非常收紧”的历史水平
     b_p20 = float(w_bbw.quantile(0.2))
-    #布林带“明显张开”的历史水平
+    # 布林带“明显张开”的历史水平
     b_p80 = float(w_bbw.quantile(0.8))
-    #判断当前布林结构是低 / 中 / 高波动
+    # 判断当前布林结构是低 / 中 / 高波动
     b_state = _q_state(b_cur, b_p20, b_p80)
 
     # 一致性判定：两者一致 → 置信度高
@@ -842,119 +843,133 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     }
     return final, dbg
 
-def decide_regime_with_no_trade(
-    base: BaseRegime,
+
+from typing import List, Optional
+
+def decide_regime(
+    base: MarketRegime,
     adx: Optional[float],
     vol_state: VolState,
-    spread_bps: Optional[float],
-    max_spread_bps  # BTC 永续常用过滤线（你可以回测再调）
-) -> Dict[str, Any]:
-    # -------------------------
-    # 1) Hard No-Trade：直接禁开仓
-    # -------------------------
-    hard_reasons = []
+    order_book: OrderBookInfo,
+    max_spread_bps: float,
+) -> Decision:
+    """
+    根据市场环境（regime + vol）与执行风险（order book），
+    产出唯一可执行决策（Decision）。
+    """
 
-    if base == "unknown" or vol_state == "unknown":
-        hard_reasons.append("regime unknown (data/indicators insufficient)")
+    # =========================================================
+    # Step 1) Hard Stop —— 系统级禁止（直接 STOP_ALL）
+    # =========================================================
+    hard_reasons: List[str] = []
 
-    if spread_bps is not None and spread_bps > max_spread_bps:
-        hard_reasons.append(f"spread too wide ({spread_bps:.1f}bps > {max_spread_bps:.1f}bps)")
+    if base is MarketRegime.UNKNOWN or vol_state is VolState.UNKNOWN:
+        hard_reasons.append("regime or vol_state unknown (insufficient data)")
 
-    hard_no_trade = len(hard_reasons) > 0
+    if (
+        order_book.spread_bps is not None
+        and order_book.spread_bps > max_spread_bps
+    ):
+        hard_reasons.append(
+            f"spread too wide ({order_book.spread_bps:.2f}bps > {max_spread_bps:.2f}bps)"
+        )
 
-    # -------------------------
-    # 2) Soft No-Trade：允许管理仓位，但禁“新开仓”
-    # -------------------------
-    soft_reasons = []
+    if hard_reasons:
+        return Decision(
+            action=Action.STOP_ALL,
+            regime=base,
+            adx=adx,
+            vol_state=vol_state,
+            order_book=order_book,
+            allow_trend=False,
+            allow_mean=False,
+            risk_scale=0.0,
+            cooldown_scale=2.0,
+            reasons=hard_reasons,
+        )
 
-    # 高波动：均值回归禁；趋势可做但降风险
-    if vol_state == "high" and base in ("range", "mixed"):
-        soft_reasons.append("high vol + (range/mixed): mean reversion likely to get wicked")
+    # =========================================================
+    # Step 2) 策略类型许可（环境层）
+    # =========================================================
+    allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
+    allow_mean  = base in (MarketRegime.RANGE, MarketRegime.MIXED)
 
-    # 低波动：趋势突破禁；均值可做但需更严格触发
-    if vol_state == "low" and base in ("trend", "mixed"):
-        soft_reasons.append("low vol + (trend/mixed): breakouts often fail (compression noise)")
+    # 波动状态对策略类型的覆盖
+    if vol_state is VolState.LOW:
+        allow_trend = False      # 低波动：禁止追趋势
+    elif vol_state is VolState.HIGH:
+        allow_mean = False       # 高波动：禁止均值回归
 
-    soft_no_trade = (not hard_no_trade) and (len(soft_reasons) > 0)
+    # =========================================================
+    # Step 3) Soft Stop —— 禁新开仓，但允许管理仓位
+    # =========================================================
+    soft_reasons: List[str] = []
 
-    # -------------------------
-    # 3) 许可矩阵 + 风险缩放
-    # -------------------------
-    allow_trend = base in ("trend", "mixed")
-    allow_mean = base in ("range", "mixed")
+    if vol_state is VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
+        soft_reasons.append(
+            "high vol + range/mixed: whipsaw risk (avoid new entries)"
+           " 在一个没有方向的市场里，波动又特别大 新开仓很容易被下一根反向 K 线扫掉已有仓位仍然需要：止损 减仓 平仓")
 
-    # vol_state 对策略许可的覆盖
-    if vol_state == "low":
-        allow_trend = False
-    if vol_state == "high":
-        allow_mean = False
+    if vol_state is VolState.LOW and base in (MarketRegime.TREND, MarketRegime.MIXED):
+        soft_reasons.append(
+            "low vol + trend/mixed: breakout failure risk (avoid new entries) "
+            "结构像趋势，但市场没有动能 极容易是假突破"
+        )
 
-    # 风险缩放
-    if vol_state == "high":
-        risk_scale = 0.6
-        cooldown_scale = 2.0
-    elif vol_state == "low":
-        risk_scale = 0.8
-        cooldown_scale = 1.5
+    # =========================================================
+    # Step 4) 风险缩放（只有在非 STOP_ALL 下才有意义）
+    # =========================================================
+    if vol_state is VolState.HIGH:
+        risk_scale, cooldown_scale = 0.6, 2.0
+    elif vol_state is VolState.LOW:
+        risk_scale, cooldown_scale = 0.8, 1.5
     else:
-        risk_scale = 1.0
-        cooldown_scale = 1.0
+        risk_scale, cooldown_scale = 1.0, 1.0
 
-    # hard 禁：完全禁止新开仓（你也可以直接 return）
-    if hard_no_trade:
-        return {
-            "regime": "no_trade",
-            "base": base,
-            "adx": adx,
-            "vol_state": vol_state,
-            "hard_no_trade": True,
-            "soft_no_trade": False,
-            "allow_trend": False,
-            "allow_mean": False,
-            "risk_scale": 0.0,
-            "cooldown_scale": 2.0,
-            "reason": " | ".join(hard_reasons),
-        }
+    if soft_reasons:
+        return Decision(
+            action=Action.NO_NEW_ENTRY,
+            regime=base,
+            adx=adx,
+            vol_state=vol_state,
+            order_book=order_book,
 
-    # soft 禁：禁止新开仓，但允许管理仓位（平仓、减仓、移动止损）
-    if soft_no_trade:
-        return {
-            "regime": "soft_no_trade",
-            "base": base,
-            "adx": adx,
-            "vol_state": vol_state,
-            "hard_no_trade": False,
-            "soft_no_trade": True,
-            "allow_trend": allow_trend,
-            "allow_mean": allow_mean,
-            "risk_scale": risk_scale,
-            "cooldown_scale": cooldown_scale,
-            "reason": " | ".join(soft_reasons),
-        }
+            allow_trend=allow_trend,
+            allow_mean=allow_mean,
 
-    # 正常可交易
-    return {
-        "regime": base,
-        "base": base,
-        "adx": adx,
-        "vol_state": vol_state,
-        "hard_no_trade": False,
-        "soft_no_trade": False,
-        "allow_trend": allow_trend,
-        "allow_mean": allow_mean,
-        "risk_scale": risk_scale,
-        "cooldown_scale": cooldown_scale,
-        "reason": f"base={base}, adx={adx}, vol={vol_state}",
-    }
+            risk_scale=risk_scale,
+            cooldown_scale=cooldown_scale,
+
+            reasons=soft_reasons,
+        )
+
+    # =========================================================
+    # Step 5) OK —— 正常可交易
+    # =========================================================
+    return Decision(
+        action=Action.OK,
+        regime=base,
+        adx=adx,
+        vol_state=vol_state,
+        order_book=order_book,
+
+        allow_trend=allow_trend,
+        allow_mean=allow_mean,
+
+        risk_scale=risk_scale,
+        cooldown_scale=cooldown_scale,
+
+        reasons=[f"ok: regime={base.value}, adx={adx}, vol={vol_state.value}"],
+    )
+
 
 def is_no_trade_high_cost(vol_state: str, spread_bps: float, max_spread_bps=15) -> tuple[bool, str]:
     if vol_state == "high" and spread_bps > max_spread_bps:
         return True, f"NO_TRADE: high vol + spread {spread_bps:.1f}bps"
     return False, ""
 
+
 def is_no_trade_chop(base: str, vol_state: str) -> tuple[bool, str]:
     if base == "range" and vol_state == "low":
         return True, "NO_TRADE: range + low vol (chop)"
     return False, ""
-
-

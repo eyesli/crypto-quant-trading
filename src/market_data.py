@@ -17,7 +17,7 @@ import pandas_ta as ta
 from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
 
-from src.models import OrderBookInfo
+from src.models import OrderBookInfo, MarketRegime
 
 
 @dataclass
@@ -25,38 +25,52 @@ class AccountOverview:
     balances: Balances
     positions: List[Position]
 
+import pandas as pd
+import pandas_ta as ta
+
 def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     high, low, close = df["high"], df["low"], df["close"]
 
+    # --- 1) ADX（结构：趋势强度） ---
     adx_df = ta.adx(high, low, close, length=14)
     df["adx_14"] = adx_df["ADX_14"]
 
+    # --- 2) ATR / NATR（波动：相对价格振幅） ---
     df["atr_14"] = ta.atr(high, low, close, length=14)
 
-    #最近一段时间，每根 1h K，价格平均会波动大约["natr_14"] 例如  0.8%
-    '''
-    NATR（%）	市场感觉
-    < 0.4%	     非常安静
-    0.4–0.8%	 正常
-    0.8–1.2%	 偏活跃
-    > 1.2%	     很猛 / 容易扫
-    '''
-
+    # 注意：这里是“比例”（例如 0.008 = 0.8%） 0.4–0.8%正常 <0.4%	非常安静  0.8–1.2%偏活跃 > 1.2%很猛 / 容易扫
     df["natr_14"] = df["atr_14"] / close
 
-    bbands = ta.bbands(close, length=20, std=2.0)
+    # 如果你希望列本身就是“百分比数值”（0.8 代表 0.8%），就用这一行替换上面那行：
+    # df["natr_14"] = (df["atr_14"] / close) * 100.0
 
+    # --- 3) Bollinger Bands（结构/波动：宽度 & 位置） ---
+    bbands = ta.bbands(close, length=20, std=2.0)
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
-    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标 1,2,3,4 「布林带宽度约等于价格的 1%–4%」
-    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
+
+    # BBB 通常是带宽（很多实现是 (upper-lower)/mid * 100），
+    # 所以你看到 1~4 很可能就是“百分比带宽 1%~4%”
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"]
+
+    # --- 4) Timing：平滑后求 slope（强烈建议） ---
+    # 先 EMA 平滑，再 diff，避免 slope 抖动
+    ema_len = 10
+    df["adx_ema"] = ta.ema(df["adx_14"], length=ema_len)
+    df["bbw_ema"] = ta.ema(df["bb_width"], length=ema_len)
+
+    # slope：近端变化方向（>0 增强 / <0 衰减）
+    df["adx_slope"] = df["adx_ema"].diff()
+    df["bbw_slope"] = df["bbw_ema"].diff()
 
     return df
 
+
 BaseRegime = Literal["trend", "range", "mixed", "unknown"]
 
-def classify_trend_range(df: pd.DataFrame) -> tuple[BaseRegime, Optional[float]]:
+def classify_trend_range(df: pd.DataFrame) -> tuple[MarketRegime, Optional[float]]:
     """
     Regime: Trend / Range / Mixed
     逻辑语义：
@@ -65,20 +79,19 @@ def classify_trend_range(df: pd.DataFrame) -> tuple[BaseRegime, Optional[float]]
     - 中间 → 混合
     """
     if df is None or "adx_14" not in df.columns:
-        return "unknown", None
-
+        return MarketRegime.UNKNOWN, None
     s = df["adx_14"].dropna()
     if len(s) < 50:          # ← 唯一一个“概念级保护”
-        return "unknown", None
+        return MarketRegime.UNKNOWN, None
 
     adx = float(s.iloc[-1])
 
     if adx >= 25:
-        return "trend", adx
+        return MarketRegime.TREND, adx
     elif adx <= 18:
-        return "range", adx
+        return MarketRegime.RANGE, adx
     else:
-        return "mixed", adx
+        return MarketRegime.MIXED, adx
 
 
 
@@ -88,7 +101,7 @@ def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     columns = [timestamp, open, high, low, close, volume]
     """
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert('Asia/Shanghai')
     df.set_index("timestamp", inplace=True)
     return df
 
@@ -269,7 +282,7 @@ def fetch_order_book_info(exchange: hyperliquid,symbol: str) -> OrderBookInfo:
         # 0 基本平衡
         # -0.3 卖盘略占优
         # -0.7 卖盘明显更厚
-        # abs(imbalance) <= 0.85 正常 > 0.85 预警  > 0.9叠加其他异常
+        # abs(imbalance) <= 0.85 正常 > 0.85 预警  > 0.9叠加其他异常 绝大多数的时候 是正常的
         #作为执行风险过滤（辅助） 不确定性很大,盘口是“假象最多”的一层 所以只能做风险过滤 imbalance 极端 执行风险高
         # 默认只做预警（warning）只有在「叠加其他异常」时，才升级为禁止下单（hard no-trade）
         imbalance = (bid_depth - ask_depth) / denom if denom else 0.0

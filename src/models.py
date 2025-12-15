@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from enum import Enum
+from typing import Any, Literal, Optional, List, Dict
 from typing import TYPE_CHECKING
 
 from ccxt.base.types import Any, OrderBook
@@ -419,3 +420,111 @@ class MarketMetrics:
     # - 失效边界：spoofing/撤单会让该指标变成“假信号”；采样延迟会在快市里滞后。
     order_book_imbalance: Optional[float] = None
 
+class Action(str, Enum):
+    STOP_ALL = "STOP_ALL"         # 禁新开仓/加仓（一般仍允许平/减/止损）
+    NO_NEW_ENTRY = "NO_NEW_ENTRY" # 禁新开仓（允许管理仓位） 但别乱砍已有仓位。
+    OK = "OK"                     # 正常运行
+
+@dataclass(frozen=True)
+class Decision:
+    action: Action
+    regime: MarketRegime                 # trend/range/mixed/unknown —— 纯环境标签
+    adx: Optional[float]
+    vol_state: str
+    order_book:OrderBookInfo
+
+    '''
+    是否允许你做“顺着价格当前方向继续下注”的交易行为
+    '''
+    allow_trend: bool
+
+    ''' 是不是可以博反弹
+        allow_mean=True
+        | 允许类型       | 行为                 
+        | -------- | ------------------ |
+        | 抄底       | 价格快速下跌后在支撑位接多      
+        | 摸顶       | 价格急涨后在阻力位做空        
+        | BB 反向    | 碰上轨卖 / 碰下轨买        
+        | VWAP 回归  | 偏离 VWAP 过大时反向      
+        | RSI 超买超卖 | RSI>70 做空 / <30 做多 
+
+        allow_mean=False
+        | 禁止行为      | 原因           
+        | ------- | ------------ |
+        | 下跌中抄底   | 高波动时容易“越抄越低” 
+        | 上涨中摸顶   | 趋势行情容易被一路打爆  
+        | BB 反向   | 布林带张开时反向是送命  
+        | VWAP 反向 | 强趋势中价格可能不回   
+        | RSI 反向  | RSI 会长时间钝化   
+
+    '''
+    allow_mean: bool
+
+    risk_scale: float
+    cooldown_scale: float
+
+    reasons: List[str]
+
+class MarketRegime(str, Enum):
+    TREND = "trend"       # 明确趋势
+    RANGE = "range"       # 明确震荡
+    MIXED = "mixed"       # 方向不稳定 / 切换中
+    UNKNOWN = "unknown"   # 数据不足 / 不判断
+
+
+from enum import Enum
+
+class VolState(str, Enum):
+    """
+    VolState（Volatility State）— 市场「波动环境」枚举
+
+    语义说明（非常重要）：
+    - VolState 描述的是“当前市场有多吵 / 风险有多大”
+    - 它不是方向判断（不代表涨跌）
+    - 它不是交易信号（不直接触发买卖）
+    - 它只用于【策略许可 / 风险缩放 / 禁交易判断】
+
+    使用位置：
+    - 与 MarketRegime（TREND / RANGE / MIXED）一起，
+      决定 allow_trend / allow_mean / risk_scale / action
+    """
+
+    # 低波动 / 压缩期
+    # 含义：
+    # - 市场振幅处于自身历史低位（NATR 低）
+    # - 价格结构被压缩（BB Width 收口）
+    # 行为后果：
+    # - 假突破多，追单成功率低
+    # - 禁止趋势策略（allow_trend = False）
+    # - 均值策略可做，但需更严格触发
+    # - 降低仓位，延长冷却期
+    LOW = "low"
+
+    # 正常波动 / 健康环境
+    # 含义：
+    # - 波动水平处于历史正常区间
+    # - 价格结构展开合理
+    # 行为后果：
+    # - 趋势策略和均值策略均可参与
+    # - 使用标准仓位与冷却期
+    NORMAL = "normal"
+
+    # 高波动 / 扩张期
+    # 含义：
+    # - 市场振幅明显放大（NATR 高）
+    # - 价格结构被快速拉开（BB Width 扩张）
+    # 行为后果：
+    # - 扫损和滑点风险显著上升
+    # - 禁止均值回归策略（allow_mean = False）
+    # - 趋势策略可做但需降仓
+    # - 冷却期延长，防止频繁交易
+    HIGH = "high"
+
+    # 未知 / 不可判定
+    # 含义：
+    # - 数据不足（指标未预热 / K 线不足）
+    # - 或数据异常（缺失 / 中断）
+    # 行为后果：
+    # - 视为系统信息不足
+    # - 直接进入 Hard No-Trade（STOP_ALL）
+    UNKNOWN = "unknown"
