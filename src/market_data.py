@@ -304,7 +304,7 @@ def fetch_order_book_info(info: Info, symbol: str, depth_pct: float = 0.005) -> 
     try:
         # 获取 100 档，确保能覆盖 0.5% 的范围 这里用ws 获取数据
         order_book = info.l2_snapshot(symbol, limit=100)
-        exchange.fetch_order_book
+        # exchange.fetch_order_book
         bids = order_book.get('bids', [])
         asks = order_book.get('asks', [])
         timestamp = order_book.get('timestamp', 0)
