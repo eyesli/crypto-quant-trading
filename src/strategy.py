@@ -832,7 +832,7 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
         conf = "high"
     else:
         # 冲突时：保守策略 —— 视为 normal/mixed（不要极端化）
-        final = "normal"
+        final = VolState.NORMAL
         conf = "low"
 
     dbg = {
@@ -863,7 +863,7 @@ def decide_regime(
     # =========================================================
     hard_reasons: List[str] = []
 
-    if base is MarketRegime.UNKNOWN or vol_state is VolState.UNKNOWN:
+    if base == MarketRegime.UNKNOWN or vol_state == VolState.UNKNOWN:
         hard_reasons.append("regime or vol_state unknown (insufficient data)")
 
     if (

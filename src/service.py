@@ -4,7 +4,7 @@ import ccxt
 
 
 from src.market_data import ohlcv_to_df, add_regime_indicators, \
-    classify_trend_range, fetch_order_book_info
+    classify_trend_range, fetch_order_book_info, classify_timing_state
 from src.models import ExecutionConfig, StrategyConfig
 from src.strategy import classify_vol_state, decide_regime
 
@@ -43,7 +43,9 @@ def start_trade(exchange: ccxt.hyperliquid) -> None:
     indicators = add_regime_indicators(df)
     base, adx = classify_trend_range(indicators)
     vol_state, vol_dbg = classify_vol_state(indicators)
+    timing = classify_timing_state(df)
     print(vol_dbg)
+    print(timing)
     order_book = fetch_order_book_info(exchange,SYMBOL)
     regime = decide_regime(base, adx, vol_state, order_book,2)
     # todo 还缺的 3 个关键点 缺一个“流动性/成交量”或“盘口稳定性”维度 Soft No-Trade 现在“过于一刀切” 你传入了 adx，但完全没用到

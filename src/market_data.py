@@ -8,7 +8,7 @@
 """
 import math
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import List, Literal, Dict
 from typing import Optional
 
 import ccxt
@@ -18,15 +18,15 @@ from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
 
 from src.models import OrderBookInfo, MarketRegime
-
+import pandas as pd
+import pandas_ta as ta
 
 @dataclass
 class AccountOverview:
     balances: Balances
     positions: List[Position]
 
-import pandas as pd
-import pandas_ta as ta
+
 
 def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     high, low, close = df["high"], df["low"], df["close"]
@@ -80,8 +80,9 @@ def classify_trend_range(df: pd.DataFrame) -> tuple[MarketRegime, Optional[float
     """
     if df is None or "adx_14" not in df.columns:
         return MarketRegime.UNKNOWN, None
+
     s = df["adx_14"].dropna()
-    if len(s) < 50:          # ← 唯一一个“概念级保护”
+    if len(s) < 50:
         return MarketRegime.UNKNOWN, None
 
     adx = float(s.iloc[-1])
@@ -94,6 +95,29 @@ def classify_trend_range(df: pd.DataFrame) -> tuple[MarketRegime, Optional[float
         return MarketRegime.MIXED, adx
 
 
+def classify_timing_state(df: pd.DataFrame, window: int = 200, k: float = 0.2) -> Dict:
+    def _state(series: pd.Series):
+        s = series.dropna()
+        if len(s) < window:
+            return {"state": "UNKNOWN", "cur": None, "eps": None}
+        #window=200（在 1h 下 ≈ 8.3 天
+        w = s.iloc[-window:]
+        cur = float(w.iloc[-1])
+        #最近 200 根 slope 的自然波动范围
+        std = float(w.std())
+        eps = std * k if std > 0 else 0.0
+        if cur > eps:
+            st = "UP"
+        elif cur < -eps:
+            st = "DOWN"
+        else:
+            st = "FLAT"
+        return {"state": st, "cur": cur, "eps": eps}
+
+    return {
+        "adx_slope": _state(df.get("adx_slope")),
+        "bbw_slope": _state(df.get("bbw_slope")),
+    }
 
 def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     """
