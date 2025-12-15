@@ -18,7 +18,7 @@ POST_ONLY = False
 RISK_PCT = 0.01
 LEVERAGE = 5.0
 
-
+MAX_SPREAD_BPS = 2.0
 
 def start_trade(exchange: ccxt.hyperliquid,state: RegimeState) -> None:
     """
@@ -41,7 +41,7 @@ def start_trade(exchange: ccxt.hyperliquid,state: RegimeState) -> None:
     print(vol_dbg)
     print(timing)
     order_book = fetch_order_book_info(exchange,SYMBOL)
-    regime = decide_regime(base, adx, vol_state, order_book,2)
+    regime = decide_regime(base, adx, vol_state, order_book,timing=timing,max_spread_bps=MAX_SPREAD_BPS)
     # todo 还缺的 3 个关键点 缺一个“流动性/成交量”或“盘口稳定性”维度 Soft No-Trade 现在“过于一刀切” 你传入了 adx，但完全没用到
 
     # funding_info = exchange.fetch_funding_rate(SYMBOL)

@@ -851,6 +851,7 @@ def decide_regime(
     adx: Optional[float],
     vol_state: VolState,
     order_book: OrderBookInfo,
+    timing: Dict,
     max_spread_bps: float,
 ) -> Decision:
     """
@@ -895,9 +896,9 @@ def decide_regime(
     allow_mean  = base in (MarketRegime.RANGE, MarketRegime.MIXED)
 
     # 波动状态对策略类型的覆盖
-    if vol_state is VolState.LOW:
+    if vol_state == VolState.LOW:
         allow_trend = False      # 低波动：禁止追趋势
-    elif vol_state is VolState.HIGH:
+    elif vol_state == VolState.HIGH:
         allow_mean = False       # 高波动：禁止均值回归
 
     # =========================================================
@@ -905,12 +906,12 @@ def decide_regime(
     # =========================================================
     soft_reasons: List[str] = []
 
-    if vol_state is VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
+    if vol_state == VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
         soft_reasons.append(
             "high vol + range/mixed: whipsaw risk (avoid new entries)"
            " 在一个没有方向的市场里，波动又特别大 新开仓很容易被下一根反向 K 线扫掉已有仓位仍然需要：止损 减仓 平仓")
 
-    if vol_state is VolState.LOW and base in (MarketRegime.TREND, MarketRegime.MIXED):
+    if vol_state == VolState.LOW and base in (MarketRegime.TREND, MarketRegime.MIXED):
         soft_reasons.append(
             "low vol + trend/mixed: breakout failure risk (avoid new entries) "
             "结构像趋势，但市场没有动能 极容易是假突破"
@@ -919,9 +920,9 @@ def decide_regime(
     # =========================================================
     # Step 4) 风险缩放（只有在非 STOP_ALL 下才有意义）
     # =========================================================
-    if vol_state is VolState.HIGH:
+    if vol_state == VolState.HIGH:
         risk_scale, cooldown_scale = 0.6, 2.0
-    elif vol_state is VolState.LOW:
+    elif vol_state == VolState.LOW:
         risk_scale, cooldown_scale = 0.8, 1.5
     else:
         risk_scale, cooldown_scale = 1.0, 1.0
