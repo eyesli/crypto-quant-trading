@@ -1,6 +1,6 @@
 from hyperliquid.utils.constants import MAINNET_API_URL
 
-from account import fetch_account_overview_sdk
+from account import fetch_account_overview
 import os
 from eth_account import Account
 from hyperliquid.exchange import Exchange

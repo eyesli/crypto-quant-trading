@@ -153,7 +153,7 @@ def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
 }
 
 '''
-def fetch_account_overview_sdk(info: Info, address: str) -> AccountOverview:
+def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     """
     用官方 SDK 的 Info 接口获取：
     - 账户权益/保证金
@@ -190,7 +190,7 @@ def fetch_account_overview_sdk(info: Info, address: str) -> AccountOverview:
                 positions.append(pos)
 
         print("📌 正在获取挂单(open_orders)...")
-        open_orders = info.frontend_open_orders(address) or []
+        frontend_open_orders = info.frontend_open_orders(address) or []
 
         if not positions:
             print("⚪ 当前无任何永续仓位。\n")
@@ -220,7 +220,7 @@ def fetch_account_overview_sdk(info: Info, address: str) -> AccountOverview:
                 sl_orders: List[float] = []
 
                 if entry_price is not None and side is not None:
-                    for o in open_orders:
+                    for o in frontend_open_orders:
                         o_coin = o.get("coin") or o.get("symbol") or o.get("asset")
                         if o_coin != coin:
                             continue
@@ -287,7 +287,7 @@ def fetch_account_overview_sdk(info: Info, address: str) -> AccountOverview:
         return AccountOverview(
             raw_user_state=us,
             positions=positions,
-            open_orders=open_orders,
+            open_orders=frontend_open_orders,
         )
 
     except Exception as e:

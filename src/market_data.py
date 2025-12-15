@@ -16,6 +16,7 @@ import pandas as pd
 import pandas_ta as ta
 from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
+from hyperliquid.info import Info
 
 from src.models import OrderBookInfo, MarketRegime
 import pandas as pd
@@ -293,7 +294,7 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_order_book_info(exchange, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
+def fetch_order_book_info(info: Info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
     """
     获取盘口微观数据
     :param exchange: ccxt exchange 实例
@@ -301,9 +302,9 @@ def fetch_order_book_info(exchange, symbol: str, depth_pct: float = 0.005) -> Op
     :param depth_pct: 深度计算范围 (0.005 代表计算上下 0.5% 范围内的挂单总额)
     """
     try:
-        # 获取 100 档，确保能覆盖 0.5% 的范围
-        order_book = exchange.fetch_order_book(symbol, limit=100)
-
+        # 获取 100 档，确保能覆盖 0.5% 的范围 这里用ws 获取数据
+        order_book = info.l2_snapshot(symbol, limit=100)
+        exchange.fetch_order_book
         bids = order_book.get('bids', [])
         asks = order_book.get('asks', [])
         timestamp = order_book.get('timestamp', 0)
@@ -371,128 +372,128 @@ def fetch_order_book_info(exchange, symbol: str, depth_pct: float = 0.005) -> Op
         return None
 
 
-def fetch_account_overview(exchange: ccxt.hyperliquid) -> AccountOverview:
-    """
-    获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
-    """
-    try:
-        # 1. 获取余额
-        print("\n💼 正在获取账户余额信息...")
-        balances = exchange.fetch_balance()
-
-        # 提取 USDC 余额
-        total_usdc = balances.get("total", {}).get("USDC", 0)
-        free_usdc = balances.get("free", {}).get("USDC", 0)
-        used_usdc = balances.get("used", {}).get("USDC", 0)
-
-        print("\n" + "=" * 60)
-        print("💰 账户余额概览")
-        print("=" * 60)
-        print(f"总权益:      {total_usdc} USDC")
-        print(f"可用余额:    {free_usdc} USDC")
-        print(f"已用保证金:  {used_usdc} USDC")
-        print("=" * 60 + "\n")
-
-        # 2. 获取仓位
-        print("📌 正在获取当前持仓、止盈止损挂单列表...")
-        positions = exchange.fetch_positions()
-        open_orders = exchange.fetch_open_orders()
-
-        if not positions:
-            print("⚪ 当前无任何永续仓位。\n")
-        else:
-            print("\n" + "=" * 80)
-            print("📊 当前持仓详情 (含止盈止损状态)")
-            print("=" * 80)
-
-            for pos in positions:
-                # --- 提取基础字段 ---
-                symbol = pos.get("symbol")
-                side = pos.get("side")  # 'long' or 'short'
-                contracts = pos.get("contracts")
-                notional = pos.get("notional")
-                entry_price = pos.get("entryPrice")
-                leverage = pos.get("leverage")
-                upnl = pos.get("unrealizedPnl")
-                roe = pos.get("percentage")
-                liq_price = pos.get("liquidationPrice")
-                margin_mode = pos.get("marginMode")
-
-                # --- 核心逻辑：匹配止盈止损单 ---
-                tp_orders = []
-                sl_orders = []
-
-                # 只有当开仓价存在时，才能判断是止盈还是止损
-                if entry_price:
-                    entry_price_val = float(entry_price)
-
-                    for order in open_orders:
-                        # 1. 交易对匹配
-                        if order['symbol'] != symbol: continue
-                        # 2. 方向相反 (多单找卖单，空单找买单)
-                        expected_close_side = 'sell' if side == 'long' else 'buy'
-                        if order['side'] != expected_close_side: continue
-
-                        # 3. 获取触发价格 (优先取 triggerPrice, 其次取 price)
-                        trigger_price = order.get('triggerPrice') or order.get('stopPrice')
-                        check_price = trigger_price if trigger_price else order.get('price')
-
-                        if check_price:
-                            check_price = float(check_price)
-                            # 4. 判断逻辑
-                            if side == 'long':
-                                # 做多：价格高于入场价是止盈，低于入场价是止损
-                                if check_price > entry_price_val:
-                                    tp_orders.append(check_price)
-                                else:
-                                    sl_orders.append(check_price)
-                            elif side == 'short':
-                                # 做空：价格低于入场价是止盈，高于入场价是止损
-                                if check_price < entry_price_val:
-                                    tp_orders.append(check_price)
-                                else:
-                                    sl_orders.append(check_price)
-
-                # --- 打印部分 (您要求的字段全部保留) ---
-                print(f"🪙  交易对:     {symbol or '-'}")
-                print(f"    方向:         {side.upper() if side else '-'}--{leverage} 倍")
-
-                if contracts is not None:
-                    print(f"    仓位数量:     {float(contracts)}")
-                if notional is not None:
-                    print(f"    名义价值:     {float(notional)} USDC")
-                if entry_price is not None:
-                    print(f"    开仓均价:     {entry_price:.2f}")
-
-                if upnl is not None:
-                    # 根据正负添加颜色 (可选)
-                    print(f"    未实现盈亏:   {float(upnl)} USDC")
-                if roe is not None:
-                    print(f"    收益率(ROE):  {roe:.2f}%")
-                if liq_price is not None:
-                    print(f"    预估强平价:   {liq_price:.2f}")
-                if margin_mode is not None:
-                    print(f"    保证金模式:   {margin_mode}")
-
-                # --- 新增：打印止盈止损状态 ---
-                print(f"    {'-' * 30}")  # 以此分隔线区分基础信息和挂单信息
-
-                if tp_orders:
-                    tp_str = ", ".join([f"${p:.2f}" for p in tp_orders])
-                    print(f"    🎯 止盈挂单:   {tp_str}")
-                else:
-                    print(f"    🎯 止盈挂单:   -- 未设置 --")
-
-                if sl_orders:
-                    sl_str = ", ".join([f"${p:.2f}" for p in sl_orders])
-                    print(f"    🛡️ 止损挂单:   {sl_str}")
-                else:
-                    print(f"    🛡️ 止损挂单:   -- 未设置 --")
-            print("=" * 80 + "\n")
-
-        return AccountOverview(balances=balances, positions=positions)
-
-    except Exception as e:
-        print(f"❌ 获取账户信息时发生未知错误: {e}")
-        # import traceback; traceback.print_exc() # 调试时可打开
-        raise
+# def fetch_account_overview2(exchange: ccxt.hyperliquid) -> AccountOverview:
+#     """
+#     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
+#     """
+#     try:
+#         # 1. 获取余额
+#         print("\n💼 正在获取账户余额信息...")
+#         balances = exchange.fetch_balance()
+#
+#         # 提取 USDC 余额
+#         total_usdc = balances.get("total", {}).get("USDC", 0)
+#         free_usdc = balances.get("free", {}).get("USDC", 0)
+#         used_usdc = balances.get("used", {}).get("USDC", 0)
+#
+#         print("\n" + "=" * 60)
+#         print("💰 账户余额概览")
+#         print("=" * 60)
+#         print(f"总权益:      {total_usdc} USDC")
+#         print(f"可用余额:    {free_usdc} USDC")
+#         print(f"已用保证金:  {used_usdc} USDC")
+#         print("=" * 60 + "\n")
+#
+#         # 2. 获取仓位
+#         print("📌 正在获取当前持仓、止盈止损挂单列表...")
+#         positions = exchange.fetch_positions()
+#         open_orders = exchange.fetch_open_orders()
+#
+#         if not positions:
+#             print("⚪ 当前无任何永续仓位。\n")
+#         else:
+#             print("\n" + "=" * 80)
+#             print("📊 当前持仓详情 (含止盈止损状态)")
+#             print("=" * 80)
+#
+#             for pos in positions:
+#                 # --- 提取基础字段 ---
+#                 symbol = pos.get("symbol")
+#                 side = pos.get("side")  # 'long' or 'short'
+#                 contracts = pos.get("contracts")
+#                 notional = pos.get("notional")
+#                 entry_price = pos.get("entryPrice")
+#                 leverage = pos.get("leverage")
+#                 upnl = pos.get("unrealizedPnl")
+#                 roe = pos.get("percentage")
+#                 liq_price = pos.get("liquidationPrice")
+#                 margin_mode = pos.get("marginMode")
+#
+#                 # --- 核心逻辑：匹配止盈止损单 ---
+#                 tp_orders = []
+#                 sl_orders = []
+#
+#                 # 只有当开仓价存在时，才能判断是止盈还是止损
+#                 if entry_price:
+#                     entry_price_val = float(entry_price)
+#
+#                     for order in open_orders:
+#                         # 1. 交易对匹配
+#                         if order['symbol'] != symbol: continue
+#                         # 2. 方向相反 (多单找卖单，空单找买单)
+#                         expected_close_side = 'sell' if side == 'long' else 'buy'
+#                         if order['side'] != expected_close_side: continue
+#
+#                         # 3. 获取触发价格 (优先取 triggerPrice, 其次取 price)
+#                         trigger_price = order.get('triggerPrice') or order.get('stopPrice')
+#                         check_price = trigger_price if trigger_price else order.get('price')
+#
+#                         if check_price:
+#                             check_price = float(check_price)
+#                             # 4. 判断逻辑
+#                             if side == 'long':
+#                                 # 做多：价格高于入场价是止盈，低于入场价是止损
+#                                 if check_price > entry_price_val:
+#                                     tp_orders.append(check_price)
+#                                 else:
+#                                     sl_orders.append(check_price)
+#                             elif side == 'short':
+#                                 # 做空：价格低于入场价是止盈，高于入场价是止损
+#                                 if check_price < entry_price_val:
+#                                     tp_orders.append(check_price)
+#                                 else:
+#                                     sl_orders.append(check_price)
+#
+#                 # --- 打印部分 (您要求的字段全部保留) ---
+#                 print(f"🪙  交易对:     {symbol or '-'}")
+#                 print(f"    方向:         {side.upper() if side else '-'}--{leverage} 倍")
+#
+#                 if contracts is not None:
+#                     print(f"    仓位数量:     {float(contracts)}")
+#                 if notional is not None:
+#                     print(f"    名义价值:     {float(notional)} USDC")
+#                 if entry_price is not None:
+#                     print(f"    开仓均价:     {entry_price:.2f}")
+#
+#                 if upnl is not None:
+#                     # 根据正负添加颜色 (可选)
+#                     print(f"    未实现盈亏:   {float(upnl)} USDC")
+#                 if roe is not None:
+#                     print(f"    收益率(ROE):  {roe:.2f}%")
+#                 if liq_price is not None:
+#                     print(f"    预估强平价:   {liq_price:.2f}")
+#                 if margin_mode is not None:
+#                     print(f"    保证金模式:   {margin_mode}")
+#
+#                 # --- 新增：打印止盈止损状态 ---
+#                 print(f"    {'-' * 30}")  # 以此分隔线区分基础信息和挂单信息
+#
+#                 if tp_orders:
+#                     tp_str = ", ".join([f"${p:.2f}" for p in tp_orders])
+#                     print(f"    🎯 止盈挂单:   {tp_str}")
+#                 else:
+#                     print(f"    🎯 止盈挂单:   -- 未设置 --")
+#
+#                 if sl_orders:
+#                     sl_str = ", ".join([f"${p:.2f}" for p in sl_orders])
+#                     print(f"    🛡️ 止损挂单:   {sl_str}")
+#                 else:
+#                     print(f"    🛡️ 止损挂单:   -- 未设置 --")
+#             print("=" * 80 + "\n")
+#
+#         return AccountOverview(balances=balances, positions=positions)
+#
+#     except Exception as e:
+#         print(f"❌ 获取账户信息时发生未知错误: {e}")
+#         # import traceback; traceback.print_exc() # 调试时可打开
+#         raise

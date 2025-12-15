@@ -28,7 +28,6 @@ from src.models import (
     VolatilitySignal,
     VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState,
 )
-from src.risk import calc_amount_from_risk
 
 
 def _validate_timeframe_weights(timeframes: list[str]) -> dict[str, float]:
@@ -50,195 +49,195 @@ def _validate_timeframe_weights(timeframes: list[str]) -> dict[str, float]:
     return weights
 
 
-def generate_trade_plan(
-        account_overview: AccountOverview,
-        market_data: MarketDataSnapshot,
-        cfg: StrategyConfig,
-) -> TradePlan:
-    symbol = market_data.symbol or cfg.symbol
-    df_map: Dict[str, pd.DataFrame] = market_data.ohlcv_df
-
-    # =========================
-    # 0) 多周期“全量”技术线分析
-    # =========================
-    #
-    # 说明：
-    # - analyze_technical_lines_single_tf：只产出技术线 signals（不算分）
-    # - summarize_technical_lines_to_score：把 signals 汇总成 score/label/regime（统一出口）
-    timeframes = list(TIMEFRAME_SETTINGS.keys())  # 由配置决定顺序/分组/权重
-
-    signals_by_tf: Dict[str, TechnicalLinesSnapshot] = {}
-    summary_by_tf: Dict[str, Dict[str, Any]] = {}
-    score_by_tf: Dict[str, float] = {}
-
-    for tf in timeframes:
-        # 根据指标 进一步分析 经济逻辑
-        sig: TechnicalLinesSnapshot = analyze_technical_lines_single_tf(df_map.get(tf))
-        signals_by_tf[tf] = sig
-
-        summ = summarize_technical_lines_to_score(sig)
-        summary_by_tf[tf] = summ
-        # summ["score"] 始终存在（数据不足时为 0），这里统一转换成 float
-        score_by_tf[tf] = float(summ.get("score") or 0.0)
-
-    # =========================
-    # Debug：输出每个 timeframe 的汇总结果（summary_by_tf）
-    # =========================
-    # 你要求“输出 summary_by_tf 的内容”：这里把每个周期的 score/label/regime/components/detail 打印出来。
-    # 如果你后续觉得太吵，可以把这段改成写日志文件或增加一个开关。
-    print("\n" + "=" * 100)
-    print(f"📌 summary_by_tf ({symbol})")
-    for tf in timeframes:
-        summ = summary_by_tf.get(tf) or {}
-        brief = {
-            "score": summ.get("score"),
-            "label": summ.get("label"),
-            "regime": summ.get("regime"),
-            "components": summ.get("components"),
-            "detail": summ.get("detail"),
-        }
-        print(f"\n--- {tf} ---")
-        print(pformat(brief, width=120, compact=True))
-    print("=" * 100 + "\n")
-
-    # =========================
-    # 1) 多周期汇总 score（核心+背景）
-    # =========================
-    tf_weights = _validate_timeframe_weights(timeframes)
-    score = sum(tf_weights[tf] * score_by_tf.get(tf, 0.0) for tf in timeframes)
-
-    # 方便你调试：把每个周期的分数串起来（证明“确实拿全了”）
-    tf_score_str = ", ".join([f"{tf}={score_by_tf.get(tf, 0.0):.2f}" for tf in timeframes])
-    tf_weight_str = ", ".join([f"{tf}={tf_weights.get(tf, 0.0):.2f}" for tf in timeframes])
-
-    ticker = market_data.metrics.ticker or {}
-    last = ticker.get("last")
-    last_px = float(last) if last is not None else _last_close(df_map.get("1m")) or _last_close(df_map.get("1h"))
-    if last_px is None:
-        return TradePlan(symbol=symbol, action="HOLD", reason="无法获取当前价格", score=score)
-
-    pos_side, pos_size = _current_position(account_overview, symbol)
-
-    # 1m 触发：避免每根 bar 都重复触发
-    trigger_long, trigger_short = _entry_trigger_1m(df_map.get("1m"))
-
-    # 盘口微观结构（可选加分/过滤）
-    ob_imb = float(market_data.metrics.order_book_imbalance or 0.0)
-    spread_bps = float(market_data.metrics.spread_bps or 0.0)
-
-    # 基础过滤：点差太大直接不做（防止流动性差时误触发）
-    if spread_bps and spread_bps > 12:
-        return TradePlan(symbol=symbol, action="HOLD", reason=f"点差过大({spread_bps:.1f}bps)，跳过", score=score)
-
-    # todo 初始止损 = 1.0 × ATR(1h)
-    #
-    # 浮盈 > 1.0 × ATR → 止损上移至 breakeven
-    # 浮盈 > 2.0 × ATR → Trailing = 1.0 × ATR
-
-    # 用 1h ATR 设定止损止盈（如果缺失则降级用 4h/1d）
-    atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h")) or _last_atr(df_map.get("1d"))
-    if atr is None or atr <= 0:
-        return TradePlan(symbol=symbol, action="HOLD", reason="ATR 不足，无法设置风控", score=score)
-
-    # --- 决策：开仓 / 平仓 / 反手 ---
-    long_bias = score >= cfg.min_score_to_open and trigger_long
-    short_bias = score <= -cfg.min_score_to_open and trigger_short
-
-    # 盘口倾斜可作为“加分确认”
-    if long_bias and ob_imb < -0.15:
-        long_bias = False
-    if short_bias and ob_imb > 0.15:
-        short_bias = False
-
-    # 计算账户权益
-    equity = _equity_usdc(account_overview)
-    if equity <= 0:
-        return TradePlan(symbol=symbol, action="HOLD", reason="权益为 0，跳过", score=score)
-
-    # 目标：开仓数量（根据 stop 距离风险定仓）
-    def build_open(direction: PositionSide) -> TradePlan:
-        if direction == "long":
-            sl = last_px - cfg.atr_stop_mult * atr
-            tp = last_px + cfg.atr_tp_mult * atr
-        else:
-            sl = last_px + cfg.atr_stop_mult * atr
-            tp = last_px - cfg.atr_tp_mult * atr
-
-        sizing = calc_amount_from_risk(
-            equity=equity,
-            risk_pct=cfg.risk_pct,
-            entry_price=last_px,
-            stop_loss=sl,
-            leverage=cfg.leverage,
-        )
-        # 这里把“全周期得分 + 权重”放进 reason，方便你复盘为什么会开仓
-        reason = f"score={score:.2f}"
-        reason += f" [scores: {tf_score_str}]"
-        reason += f" [weights: {tf_weight_str}]"
-        reason += f"，ATR={atr:.2f}，OB_imb={ob_imb:.2f}"
-        return TradePlan(
-            symbol=symbol,
-            action="OPEN",
-            direction=direction,
-            order_type="market",
-            entry_price=None,
-            open_amount=float(sizing.amount),
-            stop_loss=float(sl),
-            take_profit=float(tp),
-            reason=reason,
-            score=float(score),
-        )
-
-    # 平仓计划：数量用当前仓位数量（如果拿不到就用 0，执行器会跳过）
-    def build_close() -> TradePlan:
-        return TradePlan(
-            symbol=symbol,
-            action="CLOSE",
-            direction=pos_side if pos_side in ("long", "short") else None,
-            close_amount=float(pos_size or 0.0),
-            reason=f"趋势反转/衰减：score={score:.2f} [{tf_score_str}]",
-            score=float(score),
-        )
-
-    # 反手：先平后开（执行器会先发 reduceOnly 市价再开仓）
-    def build_flip(new_dir: PositionSide) -> TradePlan:
-        open_plan = build_open(new_dir)
-        return TradePlan(
-            symbol=symbol,
-            action="FLIP",
-            close_direction=pos_side,  # 先平旧方向
-            direction=new_dir,  # 再开新方向
-            order_type=open_plan.order_type,
-            entry_price=open_plan.entry_price,
-            close_amount=float(pos_size or 0.0),
-            open_amount=open_plan.open_amount,
-            stop_loss=open_plan.stop_loss,
-            take_profit=open_plan.take_profit,
-            reason=f"反手：pos={pos_side} -> {new_dir}，" + open_plan.reason,
-            score=open_plan.score,
-        )
-
-    if pos_side == "flat":
-        if long_bias:
-            return build_open("long")
-        if short_bias:
-            return build_open("short")
-        return TradePlan(symbol=symbol, action="HOLD", reason="无有效入场触发", score=score)
-
-    # 已持仓：反手优先
-    if pos_side == "long" and score <= -cfg.min_score_to_flip and trigger_short:
-        return build_flip("short")
-    if pos_side == "short" and score >= cfg.min_score_to_flip and trigger_long:
-        return build_flip("long")
-
-    # 趋势明显走坏则平仓
-    if pos_side == "long" and score < -0.2:
-        return build_close()
-    if pos_side == "short" and score > 0.2:
-        return build_close()
-
-    return TradePlan(symbol=symbol, action="HOLD", reason="持仓中，信号不足以调整", score=score)
-
+# def generate_trade_plan(
+#         account_overview: AccountOverview,
+#         market_data: MarketDataSnapshot,
+#         cfg: StrategyConfig,
+# ) -> TradePlan:
+#     symbol = market_data.symbol or cfg.symbol
+#     df_map: Dict[str, pd.DataFrame] = market_data.ohlcv_df
+#
+#     # =========================
+#     # 0) 多周期“全量”技术线分析
+#     # =========================
+#     #
+#     # 说明：
+#     # - analyze_technical_lines_single_tf：只产出技术线 signals（不算分）
+#     # - summarize_technical_lines_to_score：把 signals 汇总成 score/label/regime（统一出口）
+#     timeframes = list(TIMEFRAME_SETTINGS.keys())  # 由配置决定顺序/分组/权重
+#
+#     signals_by_tf: Dict[str, TechnicalLinesSnapshot] = {}
+#     summary_by_tf: Dict[str, Dict[str, Any]] = {}
+#     score_by_tf: Dict[str, float] = {}
+#
+#     for tf in timeframes:
+#         # 根据指标 进一步分析 经济逻辑
+#         sig: TechnicalLinesSnapshot = analyze_technical_lines_single_tf(df_map.get(tf))
+#         signals_by_tf[tf] = sig
+#
+#         summ = summarize_technical_lines_to_score(sig)
+#         summary_by_tf[tf] = summ
+#         # summ["score"] 始终存在（数据不足时为 0），这里统一转换成 float
+#         score_by_tf[tf] = float(summ.get("score") or 0.0)
+#
+#     # =========================
+#     # Debug：输出每个 timeframe 的汇总结果（summary_by_tf）
+#     # =========================
+#     # 你要求“输出 summary_by_tf 的内容”：这里把每个周期的 score/label/regime/components/detail 打印出来。
+#     # 如果你后续觉得太吵，可以把这段改成写日志文件或增加一个开关。
+#     print("\n" + "=" * 100)
+#     print(f"📌 summary_by_tf ({symbol})")
+#     for tf in timeframes:
+#         summ = summary_by_tf.get(tf) or {}
+#         brief = {
+#             "score": summ.get("score"),
+#             "label": summ.get("label"),
+#             "regime": summ.get("regime"),
+#             "components": summ.get("components"),
+#             "detail": summ.get("detail"),
+#         }
+#         print(f"\n--- {tf} ---")
+#         print(pformat(brief, width=120, compact=True))
+#     print("=" * 100 + "\n")
+#
+#     # =========================
+#     # 1) 多周期汇总 score（核心+背景）
+#     # =========================
+#     tf_weights = _validate_timeframe_weights(timeframes)
+#     score = sum(tf_weights[tf] * score_by_tf.get(tf, 0.0) for tf in timeframes)
+#
+#     # 方便你调试：把每个周期的分数串起来（证明“确实拿全了”）
+#     tf_score_str = ", ".join([f"{tf}={score_by_tf.get(tf, 0.0):.2f}" for tf in timeframes])
+#     tf_weight_str = ", ".join([f"{tf}={tf_weights.get(tf, 0.0):.2f}" for tf in timeframes])
+#
+#     ticker = market_data.metrics.ticker or {}
+#     last = ticker.get("last")
+#     last_px = float(last) if last is not None else _last_close(df_map.get("1m")) or _last_close(df_map.get("1h"))
+#     if last_px is None:
+#         return TradePlan(symbol=symbol, action="HOLD", reason="无法获取当前价格", score=score)
+#
+#     pos_side, pos_size = _current_position(account_overview, symbol)
+#
+#     # 1m 触发：避免每根 bar 都重复触发
+#     trigger_long, trigger_short = _entry_trigger_1m(df_map.get("1m"))
+#
+#     # 盘口微观结构（可选加分/过滤）
+#     ob_imb = float(market_data.metrics.order_book_imbalance or 0.0)
+#     spread_bps = float(market_data.metrics.spread_bps or 0.0)
+#
+#     # 基础过滤：点差太大直接不做（防止流动性差时误触发）
+#     if spread_bps and spread_bps > 12:
+#         return TradePlan(symbol=symbol, action="HOLD", reason=f"点差过大({spread_bps:.1f}bps)，跳过", score=score)
+#
+#     # todo 初始止损 = 1.0 × ATR(1h)
+#     #
+#     # 浮盈 > 1.0 × ATR → 止损上移至 breakeven
+#     # 浮盈 > 2.0 × ATR → Trailing = 1.0 × ATR
+#
+#     # 用 1h ATR 设定止损止盈（如果缺失则降级用 4h/1d）
+#     atr = _last_atr(df_map.get("1h")) or _last_atr(df_map.get("4h")) or _last_atr(df_map.get("1d"))
+#     if atr is None or atr <= 0:
+#         return TradePlan(symbol=symbol, action="HOLD", reason="ATR 不足，无法设置风控", score=score)
+#
+#     # --- 决策：开仓 / 平仓 / 反手 ---
+#     long_bias = score >= cfg.min_score_to_open and trigger_long
+#     short_bias = score <= -cfg.min_score_to_open and trigger_short
+#
+#     # 盘口倾斜可作为“加分确认”
+#     if long_bias and ob_imb < -0.15:
+#         long_bias = False
+#     if short_bias and ob_imb > 0.15:
+#         short_bias = False
+#
+#     # 计算账户权益
+#     equity = _equity_usdc(account_overview)
+#     if equity <= 0:
+#         return TradePlan(symbol=symbol, action="HOLD", reason="权益为 0，跳过", score=score)
+#
+#     # 目标：开仓数量（根据 stop 距离风险定仓）
+#     def build_open(direction: PositionSide) -> TradePlan:
+#         if direction == "long":
+#             sl = last_px - cfg.atr_stop_mult * atr
+#             tp = last_px + cfg.atr_tp_mult * atr
+#         else:
+#             sl = last_px + cfg.atr_stop_mult * atr
+#             tp = last_px - cfg.atr_tp_mult * atr
+#
+#         sizing = calc_amount_from_risk(
+#             equity=equity,
+#             risk_pct=cfg.risk_pct,
+#             entry_price=last_px,
+#             stop_loss=sl,
+#             leverage=cfg.leverage,
+#         )
+#         # 这里把“全周期得分 + 权重”放进 reason，方便你复盘为什么会开仓
+#         reason = f"score={score:.2f}"
+#         reason += f" [scores: {tf_score_str}]"
+#         reason += f" [weights: {tf_weight_str}]"
+#         reason += f"，ATR={atr:.2f}，OB_imb={ob_imb:.2f}"
+#         return TradePlan(
+#             symbol=symbol,
+#             action="OPEN",
+#             direction=direction,
+#             order_type="market",
+#             entry_price=None,
+#             open_amount=float(sizing.amount),
+#             stop_loss=float(sl),
+#             take_profit=float(tp),
+#             reason=reason,
+#             score=float(score),
+#         )
+#
+#     # 平仓计划：数量用当前仓位数量（如果拿不到就用 0，执行器会跳过）
+#     def build_close() -> TradePlan:
+#         return TradePlan(
+#             symbol=symbol,
+#             action="CLOSE",
+#             direction=pos_side if pos_side in ("long", "short") else None,
+#             close_amount=float(pos_size or 0.0),
+#             reason=f"趋势反转/衰减：score={score:.2f} [{tf_score_str}]",
+#             score=float(score),
+#         )
+#
+#     # 反手：先平后开（执行器会先发 reduceOnly 市价再开仓）
+#     def build_flip(new_dir: PositionSide) -> TradePlan:
+#         open_plan = build_open(new_dir)
+#         return TradePlan(
+#             symbol=symbol,
+#             action="FLIP",
+#             close_direction=pos_side,  # 先平旧方向
+#             direction=new_dir,  # 再开新方向
+#             order_type=open_plan.order_type,
+#             entry_price=open_plan.entry_price,
+#             close_amount=float(pos_size or 0.0),
+#             open_amount=open_plan.open_amount,
+#             stop_loss=open_plan.stop_loss,
+#             take_profit=open_plan.take_profit,
+#             reason=f"反手：pos={pos_side} -> {new_dir}，" + open_plan.reason,
+#             score=open_plan.score,
+#         )
+#
+#     if pos_side == "flat":
+#         if long_bias:
+#             return build_open("long")
+#         if short_bias:
+#             return build_open("short")
+#         return TradePlan(symbol=symbol, action="HOLD", reason="无有效入场触发", score=score)
+#
+#     # 已持仓：反手优先
+#     if pos_side == "long" and score <= -cfg.min_score_to_flip and trigger_short:
+#         return build_flip("short")
+#     if pos_side == "short" and score >= cfg.min_score_to_flip and trigger_long:
+#         return build_flip("long")
+#
+#     # 趋势明显走坏则平仓
+#     if pos_side == "long" and score < -0.2:
+#         return build_close()
+#     if pos_side == "short" and score > 0.2:
+#         return build_close()
+#
+#     return TradePlan(symbol=symbol, action="HOLD", reason="持仓中，信号不足以调整", score=score)
+#
 
 def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> TechnicalLinesSnapshot:
     """
