@@ -827,7 +827,7 @@ def decide_regime(
     if base == MarketRegime.UNKNOWN or vol_state == VolState.UNKNOWN:
         hard_reasons.append("regime or vol_state unknown (insufficient data)")
 
-    if order_book.spread_bps is not None and order_book.spread_bps > max_spread_bps:
+    if order_book and order_book.spread_bps is not None and order_book.spread_bps > max_spread_bps:
         hard_reasons.append(  f"spread too wide ({order_book.spread_bps:.2f}bps > {max_spread_bps:.2f}bps)" )
 
     if hard_reasons:

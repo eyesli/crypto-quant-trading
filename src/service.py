@@ -6,7 +6,7 @@ import ccxt
 
 
 from src.market_data import ohlcv_to_df, add_regime_indicators, \
-    classify_trend_range, fetch_order_book_info, classify_timing_state
+    classify_trend_range, fetch_order_book_info, classify_timing_state, fetch_account_overview
 from src.models import ExecutionConfig, StrategyConfig, MarketRegime, RegimeState
 from src.strategy import classify_vol_state, decide_regime
 
@@ -28,7 +28,7 @@ def start_trade(exchange: ccxt.hyperliquid,state: RegimeState) -> None:
     - 执行器（可 DRY_RUN）
     """
 
-    # account_overview = fetch_account_overview(exchange)
+    account_overview = fetch_account_overview(exchange)
     # market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
 
     data = exchange.fetch_ohlcv(SYMBOL, "1h", limit=500)

@@ -10,12 +10,16 @@ from src.models import RegimeState
 from src.service import start_trade
 
 LOOP_SECONDS = 99960
+from hyperliquid.exchange import Exchange
+from hyperliquid.utils import constants
 
 
 def main() -> None:
     """
     CLI 入口（pyproject.toml 的 [project.scripts] 会调用这里）。
     """
+
+
     try:
         exchange = create_exchange()
         state = RegimeState()

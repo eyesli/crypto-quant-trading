@@ -5,6 +5,7 @@ description = "OKX 交易所数据获取工具 - 结构化的量化交易数据�
 requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.0.0",
+    "hyperliquid-python-sdk>=0.21.0",
     "pandas>=2.3.3",
     "pandas-ta>=0.4.71b0",
     "python-dotenv>=1.0.0",
