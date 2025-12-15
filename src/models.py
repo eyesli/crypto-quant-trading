@@ -283,142 +283,99 @@ class MarketDataSnapshot:
 if TYPE_CHECKING:  # pragma: no cover
     import pandas as pd
 
+from dataclasses import dataclass
+
+
 @dataclass(frozen=True)
 class OrderBookInfo:
+    """
+    订单簿微观结构快照 (Market Microstructure Snapshot)
 
-    # -------------------------
-    # 盘口（Order Book）
-    # -------------------------
-    # order_book：订单簿快照（通常包含 bids/asks 的 [price, size] 列表）。
-    #
-    # - 用途：用于提取微观结构指标（点差、深度、不平衡）。
-    # - 失效边界：盘口是“可撤单”的，容易被 spoofing（假挂单）干扰；且快行情中采样会滞后。
-    order_book: OrderBook
+    用于存储某一时刻盘口的流动性、价差和买卖压力状态。
+    属性被设置为 frozen=True，意味着一旦实例化，数据不可修改（线程安全）。
+    """
 
-    # -------------------------
-    # microstructure（轻量）——从盘口提取的短线供需/交易成本指标
-    # -------------------------
-    # spread：最优卖价(best ask) - 最优买价(best bid)，单位是“价格”。
-    #
-    # - 经济逻辑：即时交易成本/摩擦，越大表示流动性越差、滑点风险越高。
-    # - 失效边界：快市下 bid/ask 变化很快，单次采样可能失真。
-    spread: Optional[float] = None
+    # --- 1. 基础资产信息 ---
+    symbol: str
+    # 交易对名称，例如 "BTC/USDT" 或 "ETH-PERP"
 
-    # spread_bps：点差按基点(bps=万分之一)标准化：spread / mid * 10000。
-    #
-    #
-    # ＜ 5 bps	极佳流动性	交易成本极低，如同在银行间市场交易。
-    # 5 - 15 bps	正常良好	流动性高，是主要资产（如主流股票、主要外汇对）在正常交易时间的常见状态。
-    # 20 - 50 bps	一般流动性	交易量较低的时段或小市值资产。
-    # ＞ 50 bps	流动性差	交易成本高，滑点风险大，通常出现在非活跃时段或交易不活跃的小币种、冷门股票。
-    # - 经济逻辑：跨价格水平可比的成本指标；常用于“点差过滤”（太大就不交易）。
-    # - 失效边界：best_ask 缺失或异常时不可用。
-    spread_bps: Optional[float] = None
+    # --- 2. 最优报价 (Top of Book) ---
+    best_bid: float
+    # 买一价：当前市场上最高的买入报价（你想卖出时能拿到的最高价格）
 
-    # order_book_bid_depth：买盘深度（你当前实现取前 N=20 档 bid 的 size 之和）。
-    #
-    # - 经济逻辑：买方挂单“厚不厚”。越厚通常意味着下方支撑更强、卖出冲击成本更低。
-    # - 失效边界：挂单可撤销；N 的选择会影响结论；假单/刷量会污染深度。
-    order_book_bid_depth: Optional[float] = None
+    best_ask: float
+    # 卖一价：当前市场上最低的卖出报价（你想买入时需支付的最低价格）
 
-    # order_book_ask_depth：卖盘深度（前 N=20 档 ask 的 size 之和）。
-    #
-    # - 经济逻辑：卖方挂单“厚不厚”。越厚通常意味着上方压制更强、买入冲击成本更高。
-    # - 失效边界：同 bid_depth：可撤单、N敏感、spoofing 等。
-    order_book_ask_depth: Optional[float] = None
+    mid_price: float
+    # 中间价：(Ask + Bid) / 2。
+    # 它是理论上的“公允价格”，用于计算指标时比 Close 更稳定。
 
-    # order_book_imbalance：盘口不平衡度：(bid_depth - ask_depth) / (bid_depth + ask_depth)，范围约 [-1, 1]。
-    #
-    # - 经济逻辑：刻画短线供需倾斜：
-    #   - 接近 +1：买盘明显更厚（短线偏多）；
-    #   - 接近 -1：卖盘明显更厚（短线偏空）。
-    # - 失效边界：spoofing/撤单会让该指标变成“假信号”；采样延迟会在快市里滞后。
-    order_book_imbalance: Optional[float] = None
+    spread_bps: float
+    # 盘口价差 (Basis Points, 1 bps = 0.01%)。
+    # 计算公式：(Ask - Bid) / Mid * 10000
+    # 意义：衡量交易的“摩擦成本”。值越低，流动性越好，滑点越小。
+    # 阈值参考：主流币通常 < 5 bps；> 20 bps 说明流动性枯竭。
+
+    # --- 3. 深度信息 (Liquidity Depth) ---
+    # 注意：这里存储的是 USDT 总金额 (Notional Value)，而非币的数量。
+    # 统计范围：通常统计 Mid Price 上下 0.5% 或 1% 范围内的挂单。
+
+    bid_depth_value: float
+    # 买盘支撑厚度 (USDT)。
+    # 意义：下方有多少钱在等着接货。数值越大，价格越难下跌（支撑越强）。
+
+    ask_depth_value: float
+    # 卖盘压单厚度 (USDT)。
+    # 意义：上方有多少货等着卖出。数值越大，价格越难上涨（阻力越强）。
+
+    imbalance: float
+    # 订单簿失衡度 (Order Book Imbalance)。
+    # 计算公式：(Bid_Val - Ask_Val) / (Bid_Val + Ask_Val)
+    # 范围：[-1.0, +1.0]
+    # 意义：衡量买卖力量对比。
+    #   +1.0 : 只有买单 (极强看涨)
+    #   +0.5 : 买盘明显多于卖盘 (潜在上涨压力)
+    #    0.0 : 买卖力量均衡
+    #   -0.5 : 卖盘明显多于买盘 (潜在下跌压力)
+    #   -1.0 : 只有卖单 (极强看跌)
+
+    # --- 4. 元数据 ---
+    timestamp: int
+
+    # 数据生成的时间戳 (毫秒)。用于判断数据是否过期 (Stale Data)。
+
+    def __repr__(self):
+        """
+        打印时的友好的格式化输出，方便调试日志查看。
+        例如：OrderBook(BTC/USDT | Spread: 1.50 bps | Imbalance: 0.23 | BidDepth: $500.0k | AskDepth: $400.0k)
+        """
+        return (f"OrderBook({self.symbol} | Spread: {self.spread_bps:.2f} bps | "
+                f"Imbalance: {self.imbalance:.2f} | "
+                f"BidDepth: ${self.bid_depth_value / 1000:.1f}k | "
+                f"AskDepth: ${self.ask_depth_value / 1000:.1f}k)")
 
 
 @dataclass(frozen=True)
 class MarketMetrics:
-    """
-    市场附加指标（fetch_market_data 里除K线以外的一切“杂项指标”）。
+    symbol: str
+    best_bid: float
+    best_ask: float
+    mid_price: float
+    spread_bps: float
 
-    设计目标：
-    - 替换原先的 metrics dict（避免到处用 metrics["xxx"]）
-    - 字段可为空（不同交易所/不同品种可能拿不到某些数据）
+    # 深度信息 (USDT Value)
+    bid_depth_value: float  # 买盘支撑金额
+    ask_depth_value: float  # 卖盘压单金额
+    imbalance: float        # -1 (全卖) 到 +1 (全买)
 
-    备注：
-    - ticker/open_interest/order_book 这些结构各交易所差异较大，这里用 dict[str, Any] 保持兼容。
-    """
+    # 原始数据 (可选，调试用)
+    timestamp: int
 
-    # -------------------------
-    # 基础行情（Ticker）
-    # -------------------------
-    # ticker：交易所返回的行情快照（dict 结构，常见字段包括 last/bid/ask/volume 等）。
-    #
-    # - 用途：获取当前价格（通常使用 last），以及粗略的买卖价（bid/ask）。
-    # - 经济逻辑：价格用于策略决策与风控；bid/ask 与点差用于衡量交易成本与流动性。
-    # - 失效边界：不同交易所字段名可能不一致；部分字段可能为 None；快市下采样有延迟。
-    ticker: dict[str, Any]
-
-    # -------------------------
-    # 衍生品/资金面
-    # -------------------------
-    # funding_rate：永续资金费率（通常为每期费率的小数，例如 1.25e-05）。
-    #
-    # - 经济逻辑：资金费率≈持仓拥挤度与资金成本。
-    #   - 正费率：多方付费，通常代表多头更拥挤/溢价偏高；
-    #   - 负费率：空方付费，通常代表空头更拥挤/溢价偏低。
-    # - 失效边界：各交易所口径不同；大事件时短期会失真；不能单独当成反向信号。
-    funding_rate: Optional[float]
-
-    # open_interest：未平仓量（交易所原样结构）。
-    #
-    # - 经济逻辑：OI 上升常代表杠杆参与增加；结合价格走势可判断趋势是否“有杠杆加成”。
-    # - 失效边界：OI 上升不等于趋势必延续（也可能是对冲/套利结构）；口径差异大。
-    open_interest: Optional[dict[str, Any]]
-
-    # -------------------------
-    # 盘口（Order Book）
-    # -------------------------
-    # order_book：订单簿快照（通常包含 bids/asks 的 [price, size] 列表）。
-    #
-    # - 用途：用于提取微观结构指标（点差、深度、不平衡）。
-    # - 失效边界：盘口是“可撤单”的，容易被 spoofing（假挂单）干扰；且快行情中采样会滞后。
-    order_book: OrderBook
-
-    # -------------------------
-    # microstructure（轻量）——从盘口提取的短线供需/交易成本指标
-    # -------------------------
-    # spread：最优卖价(best ask) - 最优买价(best bid)，单位是“价格”。
-    #
-    # - 经济逻辑：即时交易成本/摩擦，越大表示流动性越差、滑点风险越高。
-    # - 失效边界：快市下 bid/ask 变化很快，单次采样可能失真。
-    spread: Optional[float] = None
-
-    # spread_bps：点差按基点(bps=万分之一)标准化：spread / best_ask * 10000。
-    #
-    # - 经济逻辑：跨价格水平可比的成本指标；常用于“点差过滤”（太大就不交易）。
-    # - 失效边界：best_ask 缺失或异常时不可用。
-    spread_bps: Optional[float] = None
-
-    # order_book_bid_depth：买盘深度（你当前实现取前 N=20 档 bid 的 size 之和）。
-    #
-    # - 经济逻辑：买方挂单“厚不厚”。越厚通常意味着下方支撑更强、卖出冲击成本更低。
-    # - 失效边界：挂单可撤销；N 的选择会影响结论；假单/刷量会污染深度。
-    order_book_bid_depth: Optional[float] = None
-
-    # order_book_ask_depth：卖盘深度（前 N=20 档 ask 的 size 之和）。
-    #
-    # - 经济逻辑：卖方挂单“厚不厚”。越厚通常意味着上方压制更强、买入冲击成本更高。
-    # - 失效边界：同 bid_depth：可撤单、N敏感、spoofing 等。
-    order_book_ask_depth: Optional[float] = None
-
-    # order_book_imbalance：盘口不平衡度：(bid_depth - ask_depth) / (bid_depth + ask_depth)，范围约 [-1, 1]。
-    #
-    # - 经济逻辑：刻画短线供需倾斜：
-    #   - 接近 +1：买盘明显更厚（短线偏多）；
-    #   - 接近 -1：卖盘明显更厚（短线偏空）。
-    # - 失效边界：spoofing/撤单会让该指标变成“假信号”；采样延迟会在快市里滞后。
-    order_book_imbalance: Optional[float] = None
+    def __repr__(self):
+        return (f"OrderBook({self.symbol} | Spread: {self.spread_bps:.2f} bps | "
+                f"Imbalance: {self.imbalance:.2f} | "
+                f"BidDepth: ${self.bid_depth_value/1000:.1f}k | "
+                f"AskDepth: ${self.ask_depth_value/1000:.1f}k)")
 
 class Action(str, Enum):
     STOP_ALL = "STOP_ALL"         # 禁新开仓/加仓（一般仍允许平/减/止损）

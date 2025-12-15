@@ -742,42 +742,6 @@ def _entry_trigger_1m(df_1m: Optional[pd.DataFrame]) -> Tuple[bool, bool]:
     return bool(long_trigger), bool(short_trigger)
 
 
-# def decide_regime(df_1h: pd.DataFrame, df_4h: pd.DataFrame, metrics) -> dict:
-#     base, adx = classify_trend_range(df_1h)
-#     if base == "mixed":
-#         base2, adx2 = classify_trend_range(df_4h)
-#         if base2 != "mixed":
-#             base, adx = base2, adx2
-#
-#     vol_state, vol_dbg = classify_vol_state(df_1h)  # 优先 1h 波动状态
-#
-#     spread_bps = float(getattr(metrics, "spread_bps", 0.0) or 0.0)
-#
-#     # no-trade rules
-#     nt, reason = is_no_trade_high_cost(vol_state, spread_bps, max_spread_bps=15)
-#     if nt:
-#         return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
-#                 "allow_mean_reversion": False, "risk_scale": 0.0,
-#                 "reason": reason, "debug": {"adx": adx, **vol_dbg}}
-#
-#     nt, reason = is_no_trade_chop(base, vol_state)
-#     if nt:
-#         return {"regime": "no_trade", "base": base, "vol_state": vol_state, "allow_trend": False,
-#                 "allow_mean_reversion": False, "risk_scale": 0.0,
-#                 "reason": reason, "debug": {"adx": adx, **vol_dbg}}
-#
-#     # allow flags
-#     allow_trend = base in ("trend", "mixed") and vol_state != "low"
-#     allow_mean_rev = base in ("range", "mixed") and vol_state != "high"
-#
-#     # risk scale
-#     risk_scale = 0.7 if vol_state == "high" else 1.2 if vol_state == "low" else 1.0
-#
-#     return {"regime": base, "base": base, "vol_state": vol_state,
-#             "allow_trend": allow_trend, "allow_mean_reversion": allow_mean_rev,
-#             "risk_scale": risk_scale,
-#             "reason": f"ADX={adx:.1f}, vol={vol_state}, spread={spread_bps:.1f}bps",
-#             "debug": {"adx": adx, **vol_dbg}}
 
 
 
