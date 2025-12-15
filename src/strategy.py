@@ -818,10 +818,6 @@ def decide_regime(
     timing: Dict,
     max_spread_bps: float,
 ) -> Decision:
-    """
-    根据市场环境（regime + vol）与执行风险（order book），
-    产出唯一可执行决策（Decision）。
-    """
 
     # =========================================================
     # Step 1) Hard Stop —— 系统级禁止（直接 STOP_ALL）
@@ -831,13 +827,8 @@ def decide_regime(
     if base == MarketRegime.UNKNOWN or vol_state == VolState.UNKNOWN:
         hard_reasons.append("regime or vol_state unknown (insufficient data)")
 
-    if (
-        order_book.spread_bps is not None
-        and order_book.spread_bps > max_spread_bps
-    ):
-        hard_reasons.append(
-            f"spread too wide ({order_book.spread_bps:.2f}bps > {max_spread_bps:.2f}bps)"
-        )
+    if order_book.spread_bps is not None and order_book.spread_bps > max_spread_bps:
+        hard_reasons.append(  f"spread too wide ({order_book.spread_bps:.2f}bps > {max_spread_bps:.2f}bps)" )
 
     if hard_reasons:
         return Decision(
@@ -853,17 +844,10 @@ def decide_regime(
             reasons=hard_reasons,
         )
 
-    # =========================================================
-    # Step 2) 策略类型许可（环境层）
-    # =========================================================
+    # ---- strategy allow ----
     allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
     allow_mean  = base in (MarketRegime.RANGE, MarketRegime.MIXED)
 
-    # 波动状态对策略类型的覆盖
-    if vol_state == VolState.LOW:
-        allow_trend = False      # 低波动：禁止追趋势
-    elif vol_state == VolState.HIGH:
-        allow_mean = False       # 高波动：禁止均值回归
 
     # =========================================================
     # Step 3) Soft Stop —— 禁新开仓，但允许管理仓位
@@ -872,18 +856,45 @@ def decide_regime(
 
     if vol_state == VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
         soft_reasons.append(
-            "high vol + range/mixed: whipsaw risk (avoid new entries)"
-           " 在一个没有方向的市场里，波动又特别大 新开仓很容易被下一根反向 K 线扫掉已有仓位仍然需要：止损 减仓 平仓")
+            "high vol + range/mixed: whipsaw risk (avoid new entries). "
+            "无方向且高波动，新开仓容易被反向K线扫掉；已有仓位仍需止损/减仓/平仓。"
+        )
 
     if vol_state == VolState.LOW and base in (MarketRegime.TREND, MarketRegime.MIXED):
         soft_reasons.append(
-            "low vol + trend/mixed: breakout failure risk (avoid new entries) "
-            "结构像趋势，但市场没有动能 极容易是假突破"
+            "low vol + trend/mixed: breakout failure risk (avoid new entries). "
+            "结构像趋势但缺动能，容易假突破。"
         )
 
-    # =========================================================
-    # Step 4) 风险缩放（只有在非 STOP_ALL 下才有意义）
-    # =========================================================
+    # timing 使用起来
+    adx_slope_state = timing.get("adx_slope", {}).get("state")
+    bbw_slope_state = timing.get("bbw_slope", {}).get("state")
+
+    if adx_slope_state == "DOWN" and base in (MarketRegime.TREND, MarketRegime.MIXED):
+        soft_reasons.append("ADX slope DOWN: trend strength decaying (avoid new entries)")
+
+    if bbw_slope_state == "UP" and base in (MarketRegime.RANGE, MarketRegime.MIXED):
+        soft_reasons.append("BB width expanding: vol expanding (avoid mean-reversion entries)")
+
+    # 波动状态对策略类型的覆盖
+    if vol_state == VolState.LOW:
+        if bbw_slope_state != "UP":
+            allow_trend = False
+    elif vol_state == VolState.HIGH:
+        allow_mean = False       # 高波动：禁止均值回归
+    # adx 弱：进一步谨慎趋势
+    if adx < 20:
+        allow_trend = False
+
+    # 盘口深度/偏斜（你算了就要用）
+    depth = (order_book.bid_depth_value or 0.0) + (order_book.ask_depth_value or 0.0)
+    if 0 < depth < 200_000:
+        soft_reasons.append(f"order book too thin (depth={depth:.0f}): avoid new entries")
+
+    if abs(order_book.imbalance) > 0.6:
+        soft_reasons.append(f"order book imbalance extreme ({order_book.imbalance:.2f}): avoid new entries")
+
+    # ---- risk scale ----
     if vol_state == VolState.HIGH:
         risk_scale, cooldown_scale = 0.6, 2.0
     elif vol_state == VolState.LOW:
@@ -898,32 +909,23 @@ def decide_regime(
             adx=adx,
             vol_state=vol_state,
             order_book=order_book,
-
             allow_trend=allow_trend,
             allow_mean=allow_mean,
-
             risk_scale=risk_scale,
             cooldown_scale=cooldown_scale,
-
             reasons=soft_reasons,
         )
 
-    # =========================================================
-    # Step 5) OK —— 正常可交易
-    # =========================================================
     return Decision(
         action=Action.OK,
         regime=base,
         adx=adx,
         vol_state=vol_state,
         order_book=order_book,
-
         allow_trend=allow_trend,
         allow_mean=allow_mean,
-
         risk_scale=risk_scale,
         cooldown_scale=cooldown_scale,
-
         reasons=[f"ok: regime={base.value}, adx={adx}, vol={vol_state.value}"],
     )
 
