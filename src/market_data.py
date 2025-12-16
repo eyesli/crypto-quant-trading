@@ -46,7 +46,7 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # df["natr_14"] = (df["atr_14"] / close) * 100.0
 
     # --- 3) Bollinger Bands（结构/波动：宽度 & 位置） ---
-    bbands = ta.bbands(close, length=20, std=2.0)
+    bbands = ta.bbands(close, length=20, lower_std=2.0, upper_std=2.0)
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
@@ -294,62 +294,82 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_order_book_info(info: Info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
+from typing import Optional
+
+
+# 假设 OrderBookInfo 和 Info 类已经定义好了
+
+def fetch_order_book_info(info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
     """
-    获取盘口微观数据
-    :param exchange: ccxt exchange 实例
-    :param symbol: 交易对
-    :param depth_pct: 深度计算范围 (0.005 代表计算上下 0.5% 范围内的挂单总额)
+    获取盘口微观数据 (适配 Hyperliquid l2_snapshot 原生结构)
+    :param info: hyperliquid.info.Info 实例
+    :param symbol: 交易对 (例如 "BTC")
+    :param depth_pct: 深度计算范围
     """
     try:
-        # 获取 100 档，确保能覆盖 0.5% 的范围 这里用ws 获取数据
-        order_book = info.l2_snapshot(symbol, limit=100)
-        # exchange.fetch_order_book
-        bids = order_book.get('bids', [])
-        asks = order_book.get('asks', [])
-        timestamp = order_book.get('timestamp', 0)
+        # 1. 获取快照
+        # 返回结构: {'coin': 'BTC', 'levels': [[bids...], [asks...]], 'time': 1765877408954}
+        snapshot = info.l2_snapshot(symbol)
 
-        # 1. 基础价格检查
-        if not bids or not asks:
+        if not snapshot or 'levels' not in snapshot:
             return None
 
-        best_bid = float(bids[0][0])
-        best_ask = float(asks[0][0])
+        levels = snapshot['levels']
+        if len(levels) < 2:
+            return None
+
+        # Hyperliquid 的 levels[0] 是 Bids (降序), levels[1] 是 Asks (升序)
+        # 数据项格式: {'px': '86230.0', 'sz': '12.65384', 'n': 33}
+        raw_bids = levels[0]
+        raw_asks = levels[1]
+        timestamp = snapshot.get('time', 0)
+
+        # 2. 基础检查
+        if not raw_bids or not raw_asks:
+            return None
+
+        # 提取最优报价 (注意 px 是字符串，需要转 float)
+        best_bid = float(raw_bids[0]['px'])
+        best_ask = float(raw_asks[0]['px'])
 
         # 防御：防止出现负价格或0价格
         if best_bid <= 0 or best_ask <= 0:
             return None
 
-        # 2. 计算 Spread (使用 Mid Price)
+        # 3. 计算 Spread (使用 Mid Price)
         mid_price = (best_ask + best_bid) / 2
         spread = best_ask - best_bid
 
-        # 这里的 10,000 是将百分比转为 bps (1% = 100bps)
+        # 转换 bps
         spread_bps = (spread / mid_price) * 10_000 if mid_price > 0 else 0.0
 
-        # 3. 计算有效深度 (Weighted Depth by Price Range)
-        # 只计算距离 Mid Price 一定百分比内的单子，这样的对比才公平
+        # 4. 计算有效深度 (Weighted Depth by Price Range)
         min_bid_threshold = mid_price * (1 - depth_pct)
         max_ask_threshold = mid_price * (1 + depth_pct)
 
-        # 计算买盘总金额 (Price * Quantity)
+        # --- 计算买盘深度 ---
         current_bid_depth_val = 0.0
-        for price, qty in bids:
-            p, q = float(price), float(qty)
+        for item in raw_bids:
+            p = float(item['px'])
+            q = float(item['sz'])
+
             if p < min_bid_threshold:
-                break  # 因为 bids 是降序，低于阈值就可以停止了
+                break  # bids 是降序的，价格太低就不用算了
+
             current_bid_depth_val += p * q
 
-        # 计算卖盘总金额 (Price * Quantity)
+        # --- 计算卖盘深度 ---
         current_ask_depth_val = 0.0
-        for price, qty in asks:
-            p, q = float(price), float(qty)
+        for item in raw_asks:
+            p = float(item['px'])
+            q = float(item['sz'])
+
             if p > max_ask_threshold:
-                break  # 因为 asks 是升序，高于阈值就可以停止了
+                break  # asks 是升序的，价格太高就不用算了
+
             current_ask_depth_val += p * q
 
-        # 4. 计算不平衡度 (Imbalance)
-        # 范围 [-1, 1]。 >0 代表买盘强，<0 代表卖盘强
+        # 5. 计算不平衡度 (Imbalance)
         total_depth = current_bid_depth_val + current_ask_depth_val
         imbalance = 0.0
         if total_depth > 0:
@@ -368,6 +388,7 @@ def fetch_order_book_info(info: Info, symbol: str, depth_pct: float = 0.005) -> 
         )
 
     except Exception as e:
+        # 建议打印详细的 error 以便调试结构变化
         print(f"⚠️ Error fetching orderbook for {symbol}: {e}")
         return None
 

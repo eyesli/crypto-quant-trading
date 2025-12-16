@@ -162,7 +162,7 @@ def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     并打印类似你原 ccxt 版本的输出。
     """
     try:
-        print("\n💼 正在获取账户状态(user_state)...")
+        print("\n💼 正在获取账户状态...")
         us = info.user_state(address)  # Dict
 
         # ===== 余额/权益（USDC 维度）=====
@@ -172,9 +172,7 @@ def fetch_account_overview(info: Info, address: str) -> AccountOverview:
         used_usdc  = _to_float(margin.get("totalMarginUsed"))
         free_usdc  = _to_float(us.get("withdrawable"))
 
-        print("\n" + "=" * 60)
-        print("💰 账户余额概览 (SDK/Info.user_state)")
-        print("=" * 60)
+        print("💰 账户余额概览")
         print(f"总权益:      {total_usdc if total_usdc is not None else '-'} USDC")
         print(f"可用余额:    {free_usdc if free_usdc is not None else '-'} USDC")
         print(f"已用保证金:  {used_usdc if used_usdc is not None else '-'} USDC")

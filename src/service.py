@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
-import ccxt
 from hyperliquid.exchange import Exchange
 
-from account import fetch_account_overview
-from src.market_data import ohlcv_to_df, add_regime_indicators, \
-    classify_trend_range, fetch_order_book_info, classify_timing_state
-from src.models import ExecutionConfig, StrategyConfig, MarketRegime, RegimeState
+from src.account import fetch_account_overview
+from src.market_data import ohlcv_to_df, add_regime_indicators, classify_trend_range, classify_timing_state, \
+    fetch_order_book_info
+from src.models import RegimeState
 from src.strategy import classify_vol_state, decide_regime
 
-
-SYMBOL = "BTC/USDC:USDC"
+SYMBOL = "ETH"
 DRY_RUN = True
 LOOP_SLIPPAGE = 0.01
 POST_ONLY = False
@@ -41,19 +38,19 @@ def start_trade(exchange: Exchange,state: RegimeState) -> None:
     """
 
     account_overview = fetch_account_overview(exchange.info,HL_WALLET_ADDRESS)
-    # market_data:MarketDataSnapshot = fetch_market_data(exchange, SYMBOL)
-    candles = candles_last_n_closed(exchange.info, "BTC", "1h", limit=500)
+
+    candles = candles_last_n_closed(exchange.info, SYMBOL, "1h", limit=500)
     ohlcv = hl_candles_to_ohlcv_list(candles)
     df = ohlcv_to_df(ohlcv)
-
+    #
     indicators = add_regime_indicators(df)
     base, adx = classify_trend_range(df=indicators, prev=state.prev_base)
-
+    #
     vol_state, vol_dbg = classify_vol_state(indicators)
     timing = classify_timing_state(indicators)
-    print(vol_dbg)
-    print(timing)
-    order_book = fetch_order_book_info(exchange,SYMBOL)
+    # print(vol_dbg)
+    # print(timing)
+    order_book = fetch_order_book_info(exchange.info,SYMBOL)
     regime = decide_regime(base, adx, vol_state, order_book,timing=timing,max_spread_bps=MAX_SPREAD_BPS)
 
 
