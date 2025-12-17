@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+from typing import Dict
 
 from hyperliquid.exchange import Exchange
 
 from src.account import fetch_account_overview
 from src.market_data import ohlcv_to_df, add_regime_indicators, classify_trend_range, classify_timing_state, \
     fetch_order_book_info, build_perp_asset_map
-from src.models import RegimeState
+from src.models import RegimeState, Action, PerpAssetInfo, Decision
 from src.strategy import classify_vol_state, decide_regime
 from src.tools.utils import candles_last_n_closed, hl_candles_to_ohlcv_list
 
@@ -41,9 +42,9 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     timing = classify_timing_state(indicators)
 
     order_book = fetch_order_book_info(exchange.info, SYMBOL)
-    regime = decide_regime(base, adx, vol_state, order_book, timing=timing, max_spread_bps=MAX_SPREAD_BPS)
+    regime:Decision = decide_regime(base, adx, vol_state, order_book, timing=timing, max_spread_bps=MAX_SPREAD_BPS)
 
-    perp_asset_map = build_perp_asset_map(exchange, ["ETH", "BTC", "SOL"])
+    perp_asset_map:Dict[str, PerpAssetInfo] = build_perp_asset_map(exchange, ["ETH", "BTC", "SOL"])
 
     print("🧭 regime:", regime)
     print("🧭 regime:", perp_asset_map)
