@@ -311,7 +311,7 @@ class TradePlan:
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    symbol: str = "BTC/USDC:USDC"
+    symbol: str
     risk_pct: float = 0.01
     leverage: float = 5.0
     min_score_to_open: float = 0.35

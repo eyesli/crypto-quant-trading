@@ -39,8 +39,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     #
     vol_state, vol_dbg = classify_vol_state(indicators)
     timing = classify_timing_state(indicators)
-    # print(vol_dbg)
-    # print(timing)
+
     order_book = fetch_order_book_info(exchange.info, SYMBOL)
     regime = decide_regime(base, adx, vol_state, order_book, timing=timing, max_spread_bps=MAX_SPREAD_BPS)
 
