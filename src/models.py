@@ -382,7 +382,7 @@ class Action(str, Enum):
     NO_NEW_ENTRY = "NO_NEW_ENTRY" # 禁新开仓（允许管理仓位） 但别乱砍已有仓位。
     OK = "OK"                     # 正常运行
 
-@dataclass(frozen=True)
+@dataclass
 class Decision:
     action: Action
     regime: MarketRegime                 # trend/range/mixed/unknown —— 纯环境标签
@@ -420,7 +420,7 @@ class Decision:
     # 新开仓/仓位管理：由 action 推导，但也可显式字段方便执行器
     allow_new_entry: bool
     allow_manage: bool
-
+    strict_entry: bool=False
     risk_scale: float
     cooldown_scale: float
 
