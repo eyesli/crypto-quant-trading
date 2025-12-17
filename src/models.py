@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, Optional, List, Dict
 from typing import TYPE_CHECKING
-
+from pydantic import BaseModel
 from ccxt.base.types import Any, OrderBook
 
 Side = Literal["buy", "sell"]
@@ -387,7 +387,7 @@ class Decision:
     action: Action
     regime: MarketRegime                 # trend/range/mixed/unknown —— 纯环境标签
     adx: Optional[float]
-    vol_state: str
+    vol_state: VolState
     order_book:OrderBookInfo
 
     '''
@@ -486,6 +486,6 @@ class VolState(str, Enum):
     # - 直接进入 Hard No-Trade（STOP_ALL）
     UNKNOWN = "unknown"
 
-@dataclass
-class RegimeState:
+
+class RegimeState(BaseModel):
     prev_base: MarketRegime = MarketRegime.UNKNOWN

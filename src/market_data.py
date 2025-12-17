@@ -10,6 +10,12 @@ import math
 from dataclasses import dataclass
 from typing import List, Literal, Dict
 from typing import Optional
+from decimal import Decimal
+from typing import Dict, Any
+
+
+from decimal import Decimal
+from typing import Dict, Any, Optional, Iterable
 
 import ccxt
 import pandas as pd
@@ -393,128 +399,138 @@ def fetch_order_book_info(info, symbol: str, depth_pct: float = 0.005) -> Option
         return None
 
 
-# def fetch_account_overview2(exchange: ccxt.hyperliquid) -> AccountOverview:
-#     """
-#     获取账户整体信息：余额 + 详细仓位信息 + 关联的止盈止损单
-#     """
-#     try:
-#         # 1. 获取余额
-#         print("\n💼 正在获取账户余额信息...")
-#         balances = exchange.fetch_balance()
-#
-#         # 提取 USDC 余额
-#         total_usdc = balances.get("total", {}).get("USDC", 0)
-#         free_usdc = balances.get("free", {}).get("USDC", 0)
-#         used_usdc = balances.get("used", {}).get("USDC", 0)
-#
-#         print("\n" + "=" * 60)
-#         print("💰 账户余额概览")
-#         print("=" * 60)
-#         print(f"总权益:      {total_usdc} USDC")
-#         print(f"可用余额:    {free_usdc} USDC")
-#         print(f"已用保证金:  {used_usdc} USDC")
-#         print("=" * 60 + "\n")
-#
-#         # 2. 获取仓位
-#         print("📌 正在获取当前持仓、止盈止损挂单列表...")
-#         positions = exchange.fetch_positions()
-#         open_orders = exchange.fetch_open_orders()
-#
-#         if not positions:
-#             print("⚪ 当前无任何永续仓位。\n")
-#         else:
-#             print("\n" + "=" * 80)
-#             print("📊 当前持仓详情 (含止盈止损状态)")
-#             print("=" * 80)
-#
-#             for pos in positions:
-#                 # --- 提取基础字段 ---
-#                 symbol = pos.get("symbol")
-#                 side = pos.get("side")  # 'long' or 'short'
-#                 contracts = pos.get("contracts")
-#                 notional = pos.get("notional")
-#                 entry_price = pos.get("entryPrice")
-#                 leverage = pos.get("leverage")
-#                 upnl = pos.get("unrealizedPnl")
-#                 roe = pos.get("percentage")
-#                 liq_price = pos.get("liquidationPrice")
-#                 margin_mode = pos.get("marginMode")
-#
-#                 # --- 核心逻辑：匹配止盈止损单 ---
-#                 tp_orders = []
-#                 sl_orders = []
-#
-#                 # 只有当开仓价存在时，才能判断是止盈还是止损
-#                 if entry_price:
-#                     entry_price_val = float(entry_price)
-#
-#                     for order in open_orders:
-#                         # 1. 交易对匹配
-#                         if order['symbol'] != symbol: continue
-#                         # 2. 方向相反 (多单找卖单，空单找买单)
-#                         expected_close_side = 'sell' if side == 'long' else 'buy'
-#                         if order['side'] != expected_close_side: continue
-#
-#                         # 3. 获取触发价格 (优先取 triggerPrice, 其次取 price)
-#                         trigger_price = order.get('triggerPrice') or order.get('stopPrice')
-#                         check_price = trigger_price if trigger_price else order.get('price')
-#
-#                         if check_price:
-#                             check_price = float(check_price)
-#                             # 4. 判断逻辑
-#                             if side == 'long':
-#                                 # 做多：价格高于入场价是止盈，低于入场价是止损
-#                                 if check_price > entry_price_val:
-#                                     tp_orders.append(check_price)
-#                                 else:
-#                                     sl_orders.append(check_price)
-#                             elif side == 'short':
-#                                 # 做空：价格低于入场价是止盈，高于入场价是止损
-#                                 if check_price < entry_price_val:
-#                                     tp_orders.append(check_price)
-#                                 else:
-#                                     sl_orders.append(check_price)
-#
-#                 # --- 打印部分 (您要求的字段全部保留) ---
-#                 print(f"🪙  交易对:     {symbol or '-'}")
-#                 print(f"    方向:         {side.upper() if side else '-'}--{leverage} 倍")
-#
-#                 if contracts is not None:
-#                     print(f"    仓位数量:     {float(contracts)}")
-#                 if notional is not None:
-#                     print(f"    名义价值:     {float(notional)} USDC")
-#                 if entry_price is not None:
-#                     print(f"    开仓均价:     {entry_price:.2f}")
-#
-#                 if upnl is not None:
-#                     # 根据正负添加颜色 (可选)
-#                     print(f"    未实现盈亏:   {float(upnl)} USDC")
-#                 if roe is not None:
-#                     print(f"    收益率(ROE):  {roe:.2f}%")
-#                 if liq_price is not None:
-#                     print(f"    预估强平价:   {liq_price:.2f}")
-#                 if margin_mode is not None:
-#                     print(f"    保证金模式:   {margin_mode}")
-#
-#                 # --- 新增：打印止盈止损状态 ---
-#                 print(f"    {'-' * 30}")  # 以此分隔线区分基础信息和挂单信息
-#
-#                 if tp_orders:
-#                     tp_str = ", ".join([f"${p:.2f}" for p in tp_orders])
-#                     print(f"    🎯 止盈挂单:   {tp_str}")
-#                 else:
-#                     print(f"    🎯 止盈挂单:   -- 未设置 --")
-#
-#                 if sl_orders:
-#                     sl_str = ", ".join([f"${p:.2f}" for p in sl_orders])
-#                     print(f"    🛡️ 止损挂单:   {sl_str}")
-#                 else:
-#                     print(f"    🛡️ 止损挂单:   -- 未设置 --")
-#             print("=" * 80 + "\n")
-#
-#         return AccountOverview(balances=balances, positions=positions)
-#
-#     except Exception as e:
-#         print(f"❌ 获取账户信息时发生未知错误: {e}")
-#         # import traceback; traceback.print_exc() # 调试时可打开
-#         raise
+
+def safeDecimal(x: Any, default: str = "0") -> Decimal:
+    """
+    安全转换为 Decimal：
+    - None / 空值 → default
+    - str / int / float → Decimal
+    说明：Decimal 不能吃 None，所以统一走这里。
+    """
+    if x is None:
+        return Decimal(default)
+    # 避免 float 精度问题：统一转 str 再进 Decimal
+    return Decimal(str(x))
+
+
+def build_perp_asset_map(
+    exchange,
+    allowed_symbols: Optional[Iterable[str]] = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    一次 metaAndAssetCtxs 请求，构建全市场永续合约状态快照（带完整注释 & 安全兜底）
+
+    参数：
+    - exchange: 你的交易所对象（需要有 exchange.info.meta_and_asset_ctxs()）
+    - allowed_symbols: 允许的 symbol 白名单（例如 {"BTC","ETH"}）
+        - None 表示不过滤，返回全市场
+        - 传入 set/list/tuple 均可
+
+    返回：
+    {
+      "BTC": {
+        # ===== 静态元信息（合约规则）=====
+        "symbol": "BTC",                     # 合约名称（universe.name）
+        "size_decimals": 5,                  # 下单数量精度（最小下单单位的小数位）
+        "max_leverage": 50,                  # 最大杠杆
+        "only_isolated": False,              # 是否只支持逐仓
+
+        # ===== 价格基准（估值 / 风控）=====
+        "mark_price": Decimal(...),          # 标记价格：PnL/强平等风控基准
+        "mid_price": Decimal(...),           # 盘口中间价：(bestBid+bestAsk)/2；可能为 None
+        "oracle_price": Decimal(...),        # 预言机价格（外部参考）；可能缺失
+        "prev_day_price": Decimal(...),      # 前一日参考价；可能缺失
+
+        # ===== 资金费率（Funding）=====
+        "funding_rate": Decimal(...),        # 当前 funding；可能为 None（极端/空市场）
+        "premium": Decimal(...),             # 溢价（mark/oracle 偏离相关）；可能缺失
+
+        # ===== 市场参与度（资金/活跃度）=====
+        "open_interest": Decimal(...),       # 未平仓量 OI；可能为 None
+        "day_notional_volume": Decimal(...), # 24h 名义成交额；可能缺失
+
+        # ===== 微结构 / 滑点（冲击价）=====
+        "impact_bid": Decimal(...),          # 冲击买价（impactPxs[0]）；可能缺失/为空
+        "impact_ask": Decimal(...),          # 冲击卖价（impactPxs[1]）；可能缺失/为空
+
+        # ===== 原始上下文（调试 / 回溯）=====
+        "raw": {...}                         # 原始 ctx（不改动）
+      }
+    }
+    """
+
+    # -------------------------
+    # 1) 一次性请求交易所快照
+    # -------------------------
+    meta, asset_ctxs = exchange.info.meta_and_asset_ctxs()
+    universe = meta.get("universe", [])
+
+    # 安全校验：官方保证 index 对齐，这里工程上仍建议 assert
+    assert len(universe) == len(asset_ctxs), "universe 与 asset_ctxs 长度不一致（不应发生）"
+
+    # 允许列表：统一转成 set，O(1) 判断
+    allowed_set = set(allowed_symbols) if allowed_symbols is not None else None
+
+    asset_map: Dict[str, Dict[str, Any]] = {}
+
+    # -------------------------
+    # 2) 按 index 对齐构建资产字典
+    # -------------------------
+    for u, ctx in zip(universe, asset_ctxs):
+        symbol = u.get("name")  # BTC / ETH / ...
+
+        # 防御：跳过异常数据
+        if not symbol:
+            continue
+
+        # 白名单过滤（如果提供）
+        if allowed_set is not None and symbol not in allowed_set:
+            continue
+
+        # impactPxs 可能缺失/为空，做兜底
+        impact_pxs = ctx.get("impactPxs") or [None, None]
+        impact_bid_raw = impact_pxs[0] if len(impact_pxs) > 0 else None
+        impact_ask_raw = impact_pxs[1] if len(impact_pxs) > 1 else None
+
+        asset_map[symbol] = {
+            # ============================================================
+            # 静态元信息（合约规则）
+            # ============================================================
+            "symbol": symbol,                           # 合约名称
+            "size_decimals": u.get("szDecimals"),       # 下单数量精度
+            "max_leverage": u.get("maxLeverage"),       # 最大允许杠杆
+            "only_isolated": u.get("onlyIsolated", False),  # 是否仅支持逐仓
+
+            # ============================================================
+            # 价格基准（风控 / 估值）
+            # ============================================================
+            "mark_price": safeDecimal(ctx.get("markPx")),     # 标记价格（强平/PnL）
+            "mid_price": safeDecimal(ctx.get("midPx")),       # 盘口中间价（可能 None）
+            "oracle_price": safeDecimal(ctx.get("oraclePx")), # 预言机价格（可能缺失）
+            "prev_day_price": safeDecimal(ctx.get("prevDayPx")),  # 前一日参考价
+
+            # ============================================================
+            # 资金费率（Funding）
+            # ============================================================
+            "funding_rate": safeDecimal(ctx.get("funding")),  # 当前 funding（可能 None）
+            "premium": safeDecimal(ctx.get("premium")),       # 溢价（可能缺失）
+
+            # ============================================================
+            # 市场参与度（资金 & 活跃度）
+            # ============================================================
+            "open_interest": safeDecimal(ctx.get("openInterest")),  # 未平仓量 OI
+            "day_notional_volume": safeDecimal(ctx.get("dayNtlVlm")),  # 24h 名义成交额
+
+            # ============================================================
+            # 微结构 / 滑点（冲击价）
+            # ============================================================
+            "impact_bid": safeDecimal(impact_bid_raw),  # 冲击买价
+            "impact_ask": safeDecimal(impact_ask_raw),  # 冲击卖价
+
+            # ============================================================
+            # 原始上下文（调试 / 回溯用）
+            # ============================================================
+            "raw": ctx
+        }
+
+    return asset_map
