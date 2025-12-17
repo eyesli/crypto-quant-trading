@@ -811,13 +811,18 @@ def decide_regime(
         timing: Dict,
         max_spread_bps: float,
 ) -> "Decision":
-    # ----------------------------
-    # Helpers
-    # ----------------------------
-    spread_bps = getattr(order_book, "spread_bps", None)
-    bid_depth = getattr(order_book, "bid_depth_value", 0.0) or 0.0
-    ask_depth = getattr(order_book, "ask_depth_value", 0.0) or 0.0
-    imbalance = getattr(order_book, "imbalance", None)
+
+
+    if order_book is None:
+        spread_bps = None
+        bid_depth = 0.0
+        ask_depth = 0.0
+        imbalance = None
+    else:
+        spread_bps = order_book.spread_bps
+        bid_depth = order_book.bid_depth_value or 0.0
+        ask_depth = order_book.ask_depth_value or 0.0
+        imbalance = order_book.imbalance
     depth = bid_depth + ask_depth
     timing = timing or {}
     adx_slope_state = timing.get("adx_slope", {}).get("state")
@@ -856,7 +861,9 @@ def decide_regime(
             allow_new_entry=False, allow_manage=False,
             risk_scale=0.0, cooldown_scale=2.0,
             reasons=hard_reasons,
-            # ... pass inputs
+            adx=adx,
+            vol_state=vol_state,
+            order_book=order_book
         )
 
     # =========================================================
@@ -871,8 +878,7 @@ def decide_regime(
     elif vol_state == VolState.LOW:
         # 低波动：如果不扩张，做趋势很危险
         if bbw_slope_state != "UP":
-            # 这是一个针对趋势的过滤器，而不是全局 Stop
-            # 我们可以选择更严格地关闭 allow_trend，或者保留但在下游判断
+            allow_trend = False
             pass
 
             # --- ADX 过滤 ---
@@ -881,7 +887,7 @@ def decide_regime(
 
     # --- Timing 过滤 ---
     if adx_slope_state == "DOWN" and base in (MarketRegime.TREND, MarketRegime.MIXED):
-        soft_reasons.append("ADX slope DOWN: avoid new entries")
+        allow_trend = False
 
     if bbw_slope_state == "UP" and base in (MarketRegime.RANGE, MarketRegime.MIXED):
         allow_mean = False
