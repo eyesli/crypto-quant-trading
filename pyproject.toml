@@ -1,7 +1,7 @@
 [project]
 name = "crypto-quant-trading"
-version = "0.1.0"
-description = "OKX 交易所数据获取工具 - 结构化的量化交易数据获取系统"
+version = "1.0.0"
+description = "量化交易系统"
 requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.0.0",
