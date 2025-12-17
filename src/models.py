@@ -382,50 +382,47 @@ class Action(str, Enum):
     NO_NEW_ENTRY = "NO_NEW_ENTRY" # 禁新开仓（允许管理仓位） 但别乱砍已有仓位。
     OK = "OK"                     # 正常运行
 
+
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+# 假设这些是你项目中定义的 Enum 和类
+from src.models import Action, MarketRegime, VolState, OrderBookInfo
+
+
 @dataclass
 class Decision:
-    action: Action
-    regime: MarketRegime                 # trend/range/mixed/unknown —— 纯环境标签
-    adx: Optional[float]
-    vol_state: VolState
-    order_book:OrderBookInfo
+    """
+    策略决策结果对象：
+    由 decide_regime 生成，指导 generate_trade_plan 如何行动。
+    """
 
-    '''
-    是否允许你做“顺着价格当前方向继续下注”的交易行为
-    '''
-    allow_trend: bool
+    # --- 1. 核心行动指令 ---
+    action: Action  # OK / NO_NEW_ENTRY / STOP_ALL
+    regime: MarketRegime  # 当前识别的市场状态 (TREND/RANGE/MIXED/UNKNOWN)
 
-    ''' 是不是可以博反弹
-        allow_mean=True
-        | 允许类型       | 行为                 
-        | -------- | ------------------ |
-        | 抄底       | 价格快速下跌后在支撑位接多      
-        | 摸顶       | 价格急涨后在阻力位做空        
-        | BB 反向    | 碰上轨卖 / 碰下轨买        
-        | VWAP 回归  | 偏离 VWAP 过大时反向      
-        | RSI 超买超卖 | RSI>70 做空 / <30 做多 
+    # --- 2. 策略权限开关 ---
+    allow_trend: bool  # 是否允许运行趋势策略
+    allow_mean: bool  # 是否允许运行均值回归策略
 
-        allow_mean=False
-        | 禁止行为      | 原因           
-        | ------- | ------------ |
-        | 下跌中抄底   | 高波动时容易“越抄越低” 
-        | 上涨中摸顶   | 趋势行情容易被一路打爆  
-        | BB 反向   | 布林带张开时反向是送命  
-        | VWAP 反向 | 强趋势中价格可能不回   
-        | RSI 反向  | RSI 会长时间钝化   
+    # --- 3. 模式修饰符 (关键新增) ---
+    strict_entry: bool = False  # 默认为 False。如果为 True (狙击模式)，要求必须有 Breakout 信号才能开仓
 
-    '''
-    allow_mean: bool
+    # --- 4. 执行权限 ---
+    allow_new_entry: bool = True  # 是否允许开新仓
+    allow_manage: bool = True  # 是否允许管理旧仓位 (止盈止损等)
 
-    # 新开仓/仓位管理：由 action 推导，但也可显式字段方便执行器
-    allow_new_entry: bool
-    allow_manage: bool
-    strict_entry: bool=False
-    risk_scale: float
-    cooldown_scale: float
+    # --- 5. 动态风控参数 ---
+    risk_scale: float = 1.0  # 仓位系数 (0.0 ~ 1.0)，例如 ADX 回调时设为 0.75
+    cooldown_scale: float = 1.0  # 冷却系数，高波动时设为 2.0 (让间隔更久)
 
-    reasons: List[str]
+    # --- 6. 解释与日志 ---
+    reasons: List[str] = field(default_factory=list)  # 记录决策的理由 (hard/soft reasons)
 
+    # --- 7. 上下文快照 (用于日志或后续复盘) ---
+    adx: Optional[float] = None
+    vol_state: VolState = VolState.UNKNOWN
+    order_book: Optional[OrderBookInfo] = None
 class MarketRegime(str, Enum):
     TREND = "trend"       # 明确趋势
     RANGE = "range"       # 明确震荡
