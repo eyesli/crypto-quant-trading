@@ -819,7 +819,7 @@ def decide_regime(
     ask_depth = getattr(order_book, "ask_depth_value", 0.0) or 0.0
     imbalance = getattr(order_book, "imbalance", None)
     depth = bid_depth + ask_depth
-
+    timing = timing or {}
     adx_slope_state = timing.get("adx_slope", {}).get("state")
     bbw_slope_state = timing.get("bbw_slope", {}).get("state")
 
@@ -880,12 +880,10 @@ def decide_regime(
         allow_trend = False  # 仅关闭趋势，不影响均值
 
     # --- Timing 过滤 ---
-    if adx_slope_state == "DOWN":
-        # ADX 下降，趋势可能结束
-        allow_trend = False
+    if adx_slope_state == "DOWN" and base in (MarketRegime.TREND, MarketRegime.MIXED):
+        soft_reasons.append("ADX slope DOWN: avoid new entries")
 
-    if bbw_slope_state == "UP":
-        # 布林开口，波动变大，均值回归危险
+    if bbw_slope_state == "UP" and base in (MarketRegime.RANGE, MarketRegime.MIXED):
         allow_mean = False
 
     # =========================================================
@@ -946,7 +944,10 @@ def decide_regime(
             allow_new_entry=False, allow_manage=True,
             risk_scale=risk_scale,
             cooldown_scale=cooldown_scale,
-            reasons=["no eligible strategy for current state"]
+            reasons=["no eligible strategy for current state"] ,
+            adx=adx,
+            vol_state=vol_state,
+            order_book=order_book
         )
 
     # =========================================================
@@ -961,17 +962,10 @@ def decide_regime(
         allow_manage=True,
         risk_scale=risk_scale,
         cooldown_scale=cooldown_scale,
-        reasons=[f"ok: regime={base.name}"]
+        reasons=[f"ok: regime={base.name}"],
+        adx=adx,
+        vol_state=vol_state,
+        order_book=order_book
     )
 
 
-def is_no_trade_high_cost(vol_state: str, spread_bps: float, max_spread_bps=15) -> tuple[bool, str]:
-    if vol_state == "high" and spread_bps > max_spread_bps:
-        return True, f"NO_TRADE: high vol + spread {spread_bps:.1f}bps"
-    return False, ""
-
-
-def is_no_trade_chop(base: str, vol_state: str) -> tuple[bool, str]:
-    if base == "range" and vol_state == "low":
-        return True, "NO_TRADE: range + low vol (chop)"
-    return False, ""
