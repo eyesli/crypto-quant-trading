@@ -27,7 +27,7 @@ def candles_last_n_closed(
     interval: str,
     limit: int = 500,
     safety_ms: int = 120_000,
-    timeframe_ms: dict[str, int] = TIMEFRAME_MS,
+        timeframe_ms=None,
 ):
     """
     Fetch the last N *closed* candles from Hyperliquid.
@@ -35,6 +35,8 @@ def candles_last_n_closed(
     safety_ms: shift endTime backwards to avoid partially formed candle.
                Typical: 60_000~120_000 (1~2 minutes).
     """
+    if timeframe_ms is None:
+        timeframe_ms = TIMEFRAME_MS
     if interval not in timeframe_ms:
         raise ValueError(f"Unknown interval={interval!r}. Known: {sorted(timeframe_ms.keys())}")
 

@@ -305,7 +305,7 @@ from typing import Optional
 
 # 假设 OrderBookInfo 和 Info 类已经定义好了
 
-def fetch_order_book_info(info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
+def fetch_order_book_info(info:Info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
     """
     获取盘口微观数据 (适配 Hyperliquid l2_snapshot 原生结构)
     :param info: hyperliquid.info.Info 实例
@@ -400,7 +400,7 @@ def fetch_order_book_info(info, symbol: str, depth_pct: float = 0.005) -> Option
 
 
 
-def safeDecimal(x: Any, default: str = "0") -> Decimal:
+def safe_decimal(x: Any, default: str = "0") -> Decimal:
     """
     安全转换为 Decimal：
     - None / 空值 → default
@@ -504,28 +504,28 @@ def build_perp_asset_map(
             # ============================================================
             # 价格基准（风控 / 估值）
             # ============================================================
-            "mark_price": safeDecimal(ctx.get("markPx")),     # 标记价格（强平/PnL）
-            "mid_price": safeDecimal(ctx.get("midPx")),       # 盘口中间价（可能 None）
-            "oracle_price": safeDecimal(ctx.get("oraclePx")), # 预言机价格（可能缺失）
-            "prev_day_price": safeDecimal(ctx.get("prevDayPx")),  # 前一日参考价
+            "mark_price": safe_decimal(ctx.get("markPx")),     # 标记价格（强平/PnL）
+            "mid_price": safe_decimal(ctx.get("midPx")),       # 盘口中间价（可能 None）
+            "oracle_price": safe_decimal(ctx.get("oraclePx")), # 预言机价格（可能缺失）
+            "prev_day_price": safe_decimal(ctx.get("prevDayPx")),  # 前一日参考价
 
             # ============================================================
             # 资金费率（Funding）
             # ============================================================
-            "funding_rate": safeDecimal(ctx.get("funding")),  # 当前 funding（可能 None）
-            "premium": safeDecimal(ctx.get("premium")),       # 溢价（可能缺失）
+            "funding_rate": safe_decimal(ctx.get("funding")),  # 当前 funding（可能 None）
+            "premium": safe_decimal(ctx.get("premium")),       # 溢价（可能缺失）
 
             # ============================================================
             # 市场参与度（资金 & 活跃度）
             # ============================================================
-            "open_interest": safeDecimal(ctx.get("openInterest")),  # 未平仓量 OI
-            "day_notional_volume": safeDecimal(ctx.get("dayNtlVlm")),  # 24h 名义成交额
+            "open_interest": safe_decimal(ctx.get("openInterest")),  # 未平仓量 OI
+            "day_notional_volume": safe_decimal(ctx.get("dayNtlVlm")),  # 24h 名义成交额
 
             # ============================================================
             # 微结构 / 滑点（冲击价）
             # ============================================================
-            "impact_bid": safeDecimal(impact_bid_raw),  # 冲击买价
-            "impact_ask": safeDecimal(impact_ask_raw),  # 冲击卖价
+            "impact_bid": safe_decimal(impact_bid_raw),  # 冲击买价
+            "impact_ask": safe_decimal(impact_ask_raw),  # 冲击卖价
 
             # ============================================================
             # 原始上下文（调试 / 回溯用）

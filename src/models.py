@@ -417,6 +417,10 @@ class Decision:
     '''
     allow_mean: bool
 
+    # 新开仓/仓位管理：由 action 推导，但也可显式字段方便执行器
+    allow_new_entry: bool
+    allow_manage: bool
+
     risk_scale: float
     cooldown_scale: float
 

@@ -7,23 +7,19 @@
 
 from __future__ import annotations
 
-from pprint import pformat
-from typing import Any, Dict, Optional, Tuple, Literal, List
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
 from src.config import TIMEFRAME_SETTINGS
-from src.market_data import AccountOverview, BaseRegime
+from src.market_data import AccountOverview
 from src.models import (
-    MarketDataSnapshot,
     BreakoutSignal,
     MomentumSignal,
     OverheatSignal,
     PositionSide,
-    StrategyConfig,
     StructureCostSignal,
     TechnicalLinesSnapshot,
-    TradePlan,
     TrendLineSignal,
     VolatilitySignal,
     VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState,
@@ -741,9 +737,6 @@ def _entry_trigger_1m(df_1m: Optional[pd.DataFrame]) -> Tuple[bool, bool]:
     return bool(long_trigger), bool(short_trigger)
 
 
-
-
-
 def _q_state(cur: float, p20: float, p80: float) -> VolState:
     if cur <= p20:
         return VolState.LOW
@@ -807,93 +800,118 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     return final, dbg
 
 
-from typing import List, Optional
+from typing import Optional, Dict, List
+
 
 def decide_regime(
-    base: MarketRegime,
-    adx: Optional[float],
-    vol_state: VolState,
-    order_book: OrderBookInfo,
-    timing: Dict,
-    max_spread_bps: float,
-) -> Decision:
+        base: "MarketRegime",
+        adx: Optional[float],
+        vol_state: "VolState",
+        order_book: Optional["OrderBookInfo"],
+        timing: Dict,
+        max_spread_bps: float,
+) -> "Decision":
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    spread_bps = getattr(order_book, "spread_bps", None)
+    bid_depth = getattr(order_book, "bid_depth_value", 0.0) or 0.0
+    ask_depth = getattr(order_book, "ask_depth_value", 0.0) or 0.0
+    imbalance = getattr(order_book, "imbalance", None)
+    depth = bid_depth + ask_depth
 
-    # =========================================================
-    # Step 1) Hard Stop —— 系统级禁止（直接 STOP_ALL）
-    # =========================================================
+    adx_slope_state = timing.get("adx_slope", {}).get("state")
+    bbw_slope_state = timing.get("bbw_slope", {}).get("state")
+
+    # 初始开关
+    allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
+    allow_mean = base in (MarketRegime.RANGE, MarketRegime.MIXED)
+
+    # 区分“硬伤”（Hard Stop）和“建议”（Soft Stop/Log）
     hard_reasons: List[str] = []
+    soft_reasons: List[str] = []  # 这里的理由会导致 Action 降级为 NO_NEW_ENTRY
 
+    # =========================================================
+    # Step 1) HARD STOP (STOP_ALL) —— 数据不足或极度危险
+    # =========================================================
     if base == MarketRegime.UNKNOWN or vol_state == VolState.UNKNOWN:
-        hard_reasons.append("regime or vol_state unknown (insufficient data)")
+        hard_reasons.append("regime or vol_state unknown")
 
-    if order_book and order_book.spread_bps is not None and order_book.spread_bps > max_spread_bps:
-        hard_reasons.append(  f"spread too wide ({order_book.spread_bps:.2f}bps > {max_spread_bps:.2f}bps)" )
+    if spread_bps is not None and spread_bps > max_spread_bps:
+        hard_reasons.append(f"spread too wide ({spread_bps:.2f}bps)")
+
+    # 严重依赖 ADX，若无 ADX 则无法判断趋势，视为 Hard Stop 可能过于严格，
+    # 但如果策略核心依赖 ADX，这里也可以放 soft。这里维持你的逻辑。
+    if adx is None:
+        # 修改：如果没有 ADX，我们强制关闭趋势权限，但不一定 Stop All (除非做 Range 也需要 ADX)
+        allow_trend = False
+        # 如果你认为没有 ADX 连震荡都不能做，才放入 hard_reasons 或 soft_reasons
+        # 这里假设没有 ADX 还能勉强做震荡，暂不报错，只封禁 allow_trend
 
     if hard_reasons:
         return Decision(
             action=Action.STOP_ALL,
             regime=base,
-            adx=adx,
-            vol_state=vol_state,
-            order_book=order_book,
-            allow_trend=False,
-            allow_mean=False,
-            risk_scale=0.0,
-            cooldown_scale=2.0,
+            allow_trend=False, allow_mean=False,
+            allow_new_entry=False, allow_manage=False,
+            risk_scale=0.0, cooldown_scale=2.0,
             reasons=hard_reasons,
+            # ... pass inputs
         )
-
-    # ---- strategy allow ----
-    allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
-    allow_mean  = base in (MarketRegime.RANGE, MarketRegime.MIXED)
-
 
     # =========================================================
-    # Step 3) Soft Stop —— 禁新开仓，但允许管理仓位
+    # Step 2) Strategy Gates —— 精细化裁剪权限
+    # (注意：这里的逻辑只修改 allow_xxx，不要随便往 soft_reasons 里加东西，
+    # 除非这真的是一个“导致所有策略都不能开仓”的理由)
     # =========================================================
-    soft_reasons: List[str] = []
 
-    if vol_state == VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
-        soft_reasons.append(
-            "high vol + range/mixed: whipsaw risk (avoid new entries). "
-            "无方向且高波动，新开仓容易被反向K线扫掉；已有仓位仍需止损/减仓/平仓。"
-        )
-
-    if vol_state == VolState.LOW and base in (MarketRegime.TREND, MarketRegime.MIXED):
-        soft_reasons.append(
-            "low vol + trend/mixed: breakout failure risk (avoid new entries). "
-            "结构像趋势但缺动能，容易假突破。"
-        )
-
-    # timing 使用起来
-    adx_slope_state = timing.get("adx_slope", {}).get("state")
-    bbw_slope_state = timing.get("bbw_slope", {}).get("state")
-
-    if adx_slope_state == "DOWN" and base in (MarketRegime.TREND, MarketRegime.MIXED):
-        soft_reasons.append("ADX slope DOWN: trend strength decaying (avoid new entries)")
-
-    if bbw_slope_state == "UP" and base in (MarketRegime.RANGE, MarketRegime.MIXED):
-        soft_reasons.append("BB width expanding: vol expanding (avoid mean-reversion entries)")
-
-    # 波动状态对策略类型的覆盖
-    if vol_state == VolState.LOW:
+    # --- 波动率过滤 ---
+    if vol_state == VolState.HIGH:
+        allow_mean = False  # 高波动不做均值
+    elif vol_state == VolState.LOW:
+        # 低波动：如果不扩张，做趋势很危险
         if bbw_slope_state != "UP":
-            allow_trend = False
-    elif vol_state == VolState.HIGH:
-        allow_mean = False       # 高波动：禁止均值回归
-    # adx 弱：进一步谨慎趋势
-    if adx < 20:
+            # 这是一个针对趋势的过滤器，而不是全局 Stop
+            # 我们可以选择更严格地关闭 allow_trend，或者保留但在下游判断
+            pass
+
+            # --- ADX 过滤 ---
+    if adx is not None and adx < 20:
+        allow_trend = False  # 仅关闭趋势，不影响均值
+
+    # --- Timing 过滤 ---
+    if adx_slope_state == "DOWN":
+        # ADX 下降，趋势可能结束
         allow_trend = False
 
-    # 盘口深度/偏斜（你算了就要用）
-    depth = (order_book.bid_depth_value or 0.0) + (order_book.ask_depth_value or 0.0)
-    if 0 < depth < 200_000:
-        soft_reasons.append(f"order book too thin (depth={depth:.0f}): avoid new entries")
+    if bbw_slope_state == "UP":
+        # 布林开口，波动变大，均值回归危险
+        allow_mean = False
 
-    if abs(order_book.imbalance) > 0.6:
-        soft_reasons.append(f"order book imbalance extreme ({order_book.imbalance:.2f}): avoid new entries")
+    # =========================================================
+    # Step 3) SOFT STOP (NO_NEW_ENTRY) —— 全局环境不适合开新仓
+    # (只有当无论什么策略都不该开仓时，才写在这里)
+    # =========================================================
 
-    # ---- risk scale ----
+    # 盘口太薄：任何策略都别做
+    if order_book is not None and 0 < depth < 200_000:
+        soft_reasons.append(f"order book thin (depth={depth:.0f})")
+
+    # 盘口严重失衡：根据你的偏好，如果这被视为风险而非机会
+    if imbalance is not None and abs(imbalance) > 0.8:  # 稍微放宽一点
+        soft_reasons.append(f"extreme imbalance ({imbalance:.2f})")
+
+    # Whipsaw / Fakeout 风险 (这些确实是全局风险)
+    if vol_state == VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
+        soft_reasons.append("high vol + range: whipsaw risk")
+
+    # Orderbook 缺失 (降级处理)
+    if order_book is None:
+        soft_reasons.append("order book missing")
+
+    # =========================================================
+    # Step 4) 计算 Risk & 最终检查
+    # =========================================================
     if vol_state == VolState.HIGH:
         risk_scale, cooldown_scale = 0.6, 2.0
     elif vol_state == VolState.LOW:
@@ -901,31 +919,49 @@ def decide_regime(
     else:
         risk_scale, cooldown_scale = 1.0, 1.0
 
+    # 最终裁决：如果有软拒绝理由
     if soft_reasons:
         return Decision(
             action=Action.NO_NEW_ENTRY,
             regime=base,
-            adx=adx,
-            vol_state=vol_state,
-            order_book=order_book,
-            allow_trend=allow_trend,
+            allow_trend=allow_trend,  # 保留这些状态供参考
             allow_mean=allow_mean,
+            allow_new_entry=False,
+            allow_manage=True,
             risk_scale=risk_scale,
             cooldown_scale=cooldown_scale,
             reasons=soft_reasons,
+            adx=adx,
+            vol_state=vol_state,
+            order_book=order_book
         )
 
+    # *** 关键修复：僵尸状态检查 ***
+    # 如果把所有策略都过滤光了，也是一种 NO_NEW_ENTRY
+    if not allow_trend and not allow_mean:
+        return Decision(
+            action=Action.NO_NEW_ENTRY,
+            regime=base,
+            allow_trend=False, allow_mean=False,
+            allow_new_entry=False, allow_manage=True,
+            risk_scale=risk_scale,
+            cooldown_scale=cooldown_scale,
+            reasons=["no eligible strategy for current state"]
+        )
+
+    # =========================================================
+    # Step 5) OK
+    # =========================================================
     return Decision(
         action=Action.OK,
         regime=base,
-        adx=adx,
-        vol_state=vol_state,
-        order_book=order_book,
         allow_trend=allow_trend,
         allow_mean=allow_mean,
+        allow_new_entry=True,
+        allow_manage=True,
         risk_scale=risk_scale,
         cooldown_scale=cooldown_scale,
-        reasons=[f"ok: regime={base.value}, adx={adx}, vol={vol_state.value}"],
+        reasons=[f"ok: regime={base.name}"]
     )
 
 
