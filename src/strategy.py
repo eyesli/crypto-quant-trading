@@ -937,8 +937,10 @@ def decide_regime(
     # ADX 回调期降仓
     if adx_slope_state == Slope.DOWN and allow_trend and adx_val > 25:
         risk_scale *= 0.75
+    if vol_state == VolState.LOW and strict_entry:
+        risk_scale *= 0.7
 
-    # 软拒绝检查
+        # 软拒绝检查
     if soft_reasons:
         all_reasons = soft_reasons + gate_logs
         return Decision(
