@@ -23,6 +23,7 @@ from src.models import (
     TrendLineSignal,
     VolatilitySignal,
     VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState, TimingState, Slope,
+    PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot,
 )
 
 
@@ -987,4 +988,237 @@ def decide_regime(
         adx=adx,
         vol_state=vol_state,
         order_book=order_book
+    )
+
+
+
+def compute_direction(df_1h, regime) -> DirectionResult:
+    """
+    1h 方向层：用 EMA 结构 + 价格位置 + ADX 强度加权
+    """
+    reasons: List[str] = []
+
+    close = float(df_1h["close"].iloc[-1])
+    ema_fast = float(df_1h["ema_20"].iloc[-1])
+    ema_slow = float(df_1h["ema_50"].iloc[-1])
+    adx = float(df_1h["adx_14"].iloc[-1])
+
+    # 基础方向：EMA + 价格站位
+    if ema_slow < ema_fast < close:
+        side = Side.LONG
+        conf = 0.55
+        reasons.append("1h: close>ema_20 and ema_20>ema_50 (bull bias)")
+    elif ema_slow > ema_fast > close:
+        side = Side.SHORT
+        conf = 0.55
+        reasons.append("1h: close<ema_20 and ema_20<ema_50 (bear bias)")
+    else:
+        side = Side.NONE
+        conf = 0.25
+        reasons.append("1h: mixed alignment (no clear direction)")
+
+    # ADX 强度调整置信度
+    if adx >= 25:
+        conf += 0.20
+        reasons.append(f"1h: ADX strong ({adx:.1f}>=25)")
+    elif adx <= 18:
+        conf -= 0.10
+        reasons.append(f"1h: ADX weak ({adx:.1f}<=18)")
+
+    # 与 regime 对齐：如果趋势不允许，降低方向置信度
+    if getattr(regime, "allow_trend", True) is False:
+        conf *= 0.70
+        reasons.append("regime: trend not allowed -> reduce confidence")
+
+    conf = max(0.0, min(1.0, conf))
+    if side == Side.NONE:
+        conf = min(conf, 0.40)
+
+    return DirectionResult(side=side, confidence=conf, reasons=reasons)
+
+
+def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
+    """
+    15m 触发层：优先回调入场，其次突破入场
+    strict_entry 时：突破更苛刻、回调更贴均线、EMA 纠缠直接拒绝
+    """
+    reasons: List[str] = []
+
+    if dir_res.side == Side.NONE:
+        return TriggerResult(False, None, 0.0, ["no direction -> no trigger"])
+
+    strict = bool(getattr(regime, "strict_entry", False))
+
+    close = float(df_15m["close"].iloc[-1])
+    ema_fast = float(df_15m["ema_20"].iloc[-1])
+    ema_slow = float(df_15m["ema_50"].iloc[-1])
+    atr = float(df_15m["atr_14"].iloc[-1])
+
+    # 最近 N 根高低点用于突破触发
+    N = 20
+    hh = float(df_15m["high"].iloc[-N:].max())
+    ll = float(df_15m["low"].iloc[-N:].min())
+
+    breakout_pad = (0.20 * atr) if strict else (0.05 * atr)
+    pullback_band = (0.25 * atr) if strict else (0.35 * atr)
+
+    entry_ok = False
+    entry_hint = None
+    strength = 0.0
+
+    # A) 回调入场（更稳）
+    if dir_res.side == Side.LONG:
+        if abs(close - ema_fast) <= pullback_band and close >= ema_fast >= ema_slow:
+            entry_ok = True
+            entry_hint = close
+            strength = 0.55
+            reasons.append("15m: pullback to ema_20 and reclaimed (long)")
+    else:  # SHORT
+        if abs(close - ema_fast) <= pullback_band and close <= ema_fast <= ema_slow:
+            entry_ok = True
+            entry_hint = close
+            strength = 0.55
+            reasons.append("15m: pullback to ema_20 and rejected (short)")
+
+    # B) 突破入场（更快）
+    if not entry_ok:
+        if dir_res.side == Side.LONG and close >= (hh + breakout_pad) and ema_fast >= ema_slow:
+            entry_ok = True
+            entry_hint = hh + breakout_pad
+            strength = 0.65 if strict else 0.60
+            reasons.append(f"15m: breakout above {N}-bar HH + pad (long)")
+        elif dir_res.side == Side.SHORT and close <= (ll - breakout_pad) and ema_fast <= ema_slow:
+            entry_ok = True
+            entry_hint = ll - breakout_pad
+            strength = 0.65 if strict else 0.60
+            reasons.append(f"15m: breakdown below {N}-bar LL - pad (short)")
+
+    # strict_entry：EMA 纠缠过滤（避免震荡里假触发）
+    if entry_ok and strict:
+        ema_gap = abs(ema_fast - ema_slow)
+        if ema_gap < 0.20 * atr:
+            entry_ok = False
+            strength *= 0.5
+            reasons.append("strict: ema_20/ema_50 too close -> reject")
+
+    return TriggerResult(entry_ok, entry_hint, strength, reasons)
+
+
+def compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info) -> ValidityResult:
+    """
+    有效性/风险层：
+    - 初始止损：ATR 止损 + 结构止损（取更保守）
+    - 5m 反向漂移过滤（防假突破/插针）
+    - exit_ok：均线反穿作为最小退出信号（可扩展为结构破坏/动能衰竭）
+    flip_ok：默认关闭（反手需要更严格的反向触发）
+    """
+    reasons: List[str] = []
+
+    if dir_res.side == Side.NONE:
+        return ValidityResult(None, False, False, 0.0, ["no direction -> no validity"])
+
+    strict = bool(getattr(regime, "strict_entry", False))
+    close15 = float(df_15m["close"].iloc[-1])
+    atr15 = float(df_15m["atr_14"].iloc[-1])
+
+    # 1) 止损：ATR + 结构
+    k = 1.3 if strict else 1.6
+    atr_stop_dist = k * atr15
+
+    N = 10
+    swing_low = float(df_15m["low"].iloc[-N:].min())
+    swing_high = float(df_15m["high"].iloc[-N:].max())
+
+    if dir_res.side == Side.LONG:
+        atr_sl = close15 - atr_stop_dist
+        struct_sl = swing_low - 0.10 * atr15
+        stop_price = max(atr_sl, struct_sl)  # 更紧的那个
+        reasons.append(f"stop: long max(ATR, struct) -> {stop_price:.2f}")
+    else:
+        atr_sl = close15 + atr_stop_dist
+        struct_sl = swing_high + 0.10 * atr15
+        stop_price = min(atr_sl, struct_sl)
+        reasons.append(f"stop: short min(ATR, struct) -> {stop_price:.2f}")
+
+    # 2) 质量：5m 防反向漂移（可替换成更严格的形态）
+    quality = 0.60
+    if df_5m is not None and len(df_5m) >= 5:
+        last3 = df_5m["close"].iloc[-3:]
+        drift = float(last3.iloc[-1] - last3.iloc[0])
+        atr5 = float(df_5m["atr_14"].iloc[-1])
+
+        if dir_res.side == Side.LONG and drift < -0.30 * atr5:
+            quality -= 0.25
+            reasons.append("5m: adverse drift after trigger -> lower quality")
+        if dir_res.side == Side.SHORT and drift > 0.30 * atr5:
+            quality -= 0.25
+            reasons.append("5m: adverse drift after trigger -> lower quality")
+
+    # 3) exit_ok：均线反穿（最小版本）
+    ema_fast15 = float(df_15m["ema_20"].iloc[-1])
+    ema_slow15 = float(df_15m["ema_50"].iloc[-1])
+    exit_ok = False
+    if dir_res.side == Side.LONG and ema_fast15 < ema_slow15:
+        exit_ok = True
+        reasons.append("exit: 15m ema_20 crossed below ema_50")
+    if dir_res.side == Side.SHORT and ema_fast15 > ema_slow15:
+        exit_ok = True
+        reasons.append("exit: 15m ema_20 crossed above ema_50")
+
+    # 4) flip_ok：默认严格关闭（你要做反手必须加反向触发+thesis invalidated）
+    flip_ok = False
+
+    quality = max(0.0, min(1.0, quality))
+    return ValidityResult(stop_price, exit_ok, flip_ok, quality, reasons)
+
+
+def score_signal(dir_res, trg_res, val_res, regime) -> Tuple[float, List[str]]:
+    """
+    打分：Direction(40) + Trigger(40) + Quality(20)
+    """
+    reasons: List[str] = []
+    score = 0.0
+
+    score += 40.0 * dir_res.confidence
+    reasons += dir_res.reasons
+
+    score += 40.0 * (trg_res.strength if trg_res.entry_ok else 0.0)
+    reasons += trg_res.reasons
+
+    score += 20.0 * val_res.quality
+    reasons += val_res.reasons
+
+    # regime 惩罚
+    if getattr(regime, "allow_trend", True) is False:
+        score *= 0.70
+        reasons.append("penalty: trend not allowed")
+
+    if getattr(regime, "strict_entry", False):
+        reasons.append("strict_entry enabled")
+
+    return score, reasons
+
+
+def build_signal(df_1h, df_15m, df_5m, regime, asset_info, now_ts: float) -> SignalSnapshot:
+    dir_res = compute_direction(df_1h, regime)
+    trg_res = compute_trigger(df_15m, dir_res, regime)
+    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info)
+
+    score, reasons = score_signal(dir_res, trg_res, val_res, regime)
+    entry_threshold = 80.0 if getattr(regime, "strict_entry", False) else 70.0
+
+    entry_ok = trg_res.entry_ok and (score >= entry_threshold) and (dir_res.side != Side.NONE)
+
+    return SignalSnapshot(
+        side=dir_res.side,
+        entry_ok=entry_ok,
+        add_ok=False,  # 先禁用
+        exit_ok=val_res.exit_ok,
+        flip_ok=val_res.flip_ok,
+        entry_price_hint=trg_res.entry_price_hint,
+        stop_price=val_res.stop_price,
+        score=score,
+        reasons=reasons,
+        ttl_seconds=(45 if getattr(regime, "strict_entry", False) else 120),
+        created_ts=now_ts
     )

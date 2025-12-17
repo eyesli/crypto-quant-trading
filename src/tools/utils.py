@@ -31,7 +31,7 @@ def candles_last_n_closed(
 ):
     """
     Fetch the last N *closed* candles from Hyperliquid.
-
+    "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "3d", "1w", "1M"
     safety_ms: shift endTime backwards to avoid partially formed candle.
                Typical: 60_000~120_000 (1~2 minutes).
     """
@@ -43,6 +43,7 @@ def candles_last_n_closed(
     now_ms = int(time.time() * 1000)
     end_ms = now_ms - int(safety_ms)
     start_ms = end_ms - timeframe_ms[interval] * int(limit)
+    #"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "3d", "1w", "1M"
     return info.candles_snapshot(name=name, interval=interval, startTime=start_ms, endTime=end_ms)
 
 

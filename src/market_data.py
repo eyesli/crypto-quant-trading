@@ -47,7 +47,7 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # 注意：这里是“比例”（例如 0.008 = 0.8%） 0.4–0.8%正常 <0.4%	非常安静  0.8–1.2%偏活跃 > 1.2%很猛 / 容易扫
     df["natr_14"] = df["atr_14"] / close
-
+    df["natr_ema"] = ta.ema(df["natr_14"], length=10)
     # 如果你希望列本身就是“百分比数值”（0.8 代表 0.8%），就用这一行替换上面那行：
     # df["natr_14"] = (df["atr_14"] / close) * 100.0
 
@@ -68,10 +68,23 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["adx_ema"] = ta.ema(df["adx_14"], length=ema_len)
     df["bbw_ema"] = ta.ema(df["bb_width"], length=ema_len)
 
-    # slope：近端变化方向（>0 增强 / <0 衰减）
+    # slope：近端变化方向（>0 增强 / <0 衰减） 当前K线的 adx_ema - 上一个 adx_ema
     df["adx_slope"] = df["adx_ema"].diff()
     df["bbw_slope"] = df["bbw_ema"].diff()
 
+    df["ema_20"] = ta.ema(close, length=20)
+    df["ema_50"] = ta.ema(close, length=50)
+
+    df["vol_sma_20"] = ta.sma(df["volume"], length=20)
+    df["vol_ratio"] = df["volume"] / df["vol_sma_20"]
+
+    df["rsi_14"] = ta.rsi(close, length=14)
+
+    df["vwap"] = ta.vwap(high, low, close, df["volume"])
+
+    N = 10
+    df["swing_low_10"] = df["low"].rolling(N).min()
+    df["swing_high_10"] = df["high"].rolling(N).max()
     return df
 
 
@@ -126,13 +139,20 @@ def classify_timing_state(df: pd.DataFrame, window: int = 200, k: float = 0.2) -
     def _state(series: Optional[pd.Series]) -> SlopeState:
         if series is None:
             return SlopeState(state=Slope.UNKNOWN, cur=None, eps=None)
+        #指标还没算出来的那些 K 线”全部丢掉
         s = series.dropna()
         if len(s) < window:
             return SlopeState(state=Slope.UNKNOWN, cur=None, eps=None)
         #window=200（在 1h 下 ≈ 8.3 天
         w = s.iloc[-window:]
+
         cur = float(w.iloc[-1])
-        #最近 200 根 slope 的自然波动范围
+        #std = 0.8 意味着在过去的 200 根 K 线里，ADX 的变化速度（斜率）大部分时间（约 68% 的概率）在 -0.8 到 +0.8 这个范围内波动。
+        '''
+        想象 ADX 从 20 涨到 50（一个非常标准的趋势行情）：如果这个过程花了 30 根 K 线（30小时）。
+        平均每根 K 线涨：$(50 - 20) / 30 = 1.0$。你看，1.0 的斜率是典型趋势行情的速度。
+        所以，你的统计结果 std = 0.8 能够涵盖这种典型的波动，说明它准确地捕捉到了市场的脉搏。
+        '''
         std = float(w.std())
         eps = std * k if std > 0 else 0.0
         if cur > eps:

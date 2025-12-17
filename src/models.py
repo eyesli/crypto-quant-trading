@@ -366,3 +366,47 @@ class ExecutionConfig:
 
 class RegimeState(BaseModel):
     prev_base: MarketRegime = MarketRegime.UNKNOWN
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Optional
+
+class Side(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+    NONE = "NONE"
+
+@dataclass
+class DirectionResult:
+    side: Side
+    confidence: float              # 0~1
+    reasons: List[str]
+
+@dataclass
+class TriggerResult:
+    entry_ok: bool
+    entry_price_hint: Optional[float]
+    strength: float               # 0~1
+    reasons: List[str]
+
+@dataclass
+class ValidityResult:
+    stop_price: Optional[float]
+    exit_ok: bool
+    flip_ok: bool
+    quality: float                # 0~1
+    reasons: List[str]
+
+@dataclass
+class SignalSnapshot:
+    side: Side
+    entry_ok: bool
+    add_ok: bool
+    exit_ok: bool
+    flip_ok: bool
+    entry_price_hint: Optional[float]
+    stop_price: Optional[float]
+    score: float
+    reasons: List[str]
+    ttl_seconds: int
+    created_ts: float
