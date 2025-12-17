@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Literal, Optional, List, Dict, TYPE_CHECKING
 from pydantic import BaseModel
@@ -99,6 +100,41 @@ class OrderBookInfo:
                 f"Imbalance: {self.imbalance:.2f} | "
                 f"BidDepth: ${self.bid_depth_value / 1000:.1f}k | "
                 f"AskDepth: ${self.ask_depth_value / 1000:.1f}k)")
+
+
+@dataclass(frozen=True)
+class PerpAssetInfo:
+    """
+    Typed snapshot of Hyperliquid perp asset context (meta + ctx).
+    Returned by build_perp_asset_map().
+    """
+
+    # Static metadata (contract rules)
+    symbol: str
+    size_decimals: Optional[int] = None
+    max_leverage: Optional[int] = None
+    only_isolated: bool = False
+
+    # Pricing / risk anchors
+    mark_price: Decimal = Decimal("0")
+    mid_price: Decimal = Decimal("0")
+    oracle_price: Decimal = Decimal("0")
+    prev_day_price: Decimal = Decimal("0")
+
+    # Funding
+    funding_rate: Decimal = Decimal("0")
+    premium: Decimal = Decimal("0")
+
+    # Participation / activity
+    open_interest: Decimal = Decimal("0")
+    day_notional_volume: Decimal = Decimal("0")
+
+    # Microstructure / impact
+    impact_bid: Decimal = Decimal("0")
+    impact_ask: Decimal = Decimal("0")
+
+    # Raw ctx for debugging/backfill (exclude from repr to keep logs clean)
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)

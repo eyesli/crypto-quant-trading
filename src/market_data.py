@@ -24,7 +24,7 @@ from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
 from hyperliquid.info import Info
 
-from src.models import OrderBookInfo, MarketRegime, TimingState, SlopeState,Slope
+from src.models import OrderBookInfo, MarketRegime, TimingState, SlopeState, Slope, PerpAssetInfo
 import pandas as pd
 import pandas_ta as ta
 
@@ -418,7 +418,7 @@ def safe_decimal(x: Any, default: str = "0") -> Decimal:
 def build_perp_asset_map(
     exchange,
     allowed_symbols: Optional[Iterable[str]] = None
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, PerpAssetInfo]:
     """
     一次 metaAndAssetCtxs 请求，构建全市场永续合约状态快照（带完整注释 & 安全兜底）
 
@@ -473,7 +473,7 @@ def build_perp_asset_map(
     # 允许列表：统一转成 set，O(1) 判断
     allowed_set = set(allowed_symbols) if allowed_symbols is not None else None
 
-    asset_map: Dict[str, Dict[str, Any]] = {}
+    asset_map: Dict[str, PerpAssetInfo] = {}
 
     # -------------------------
     # 2) 按 index 对齐构建资产字典
@@ -494,45 +494,33 @@ def build_perp_asset_map(
         impact_bid_raw = impact_pxs[0] if len(impact_pxs) > 0 else None
         impact_ask_raw = impact_pxs[1] if len(impact_pxs) > 1 else None
 
-        asset_map[symbol] = {
-            # ============================================================
-            # 静态元信息（合约规则）
-            # ============================================================
-            "symbol": symbol,                           # 合约名称
-            "size_decimals": u.get("szDecimals"),       # 下单数量精度
-            "max_leverage": u.get("maxLeverage"),       # 最大允许杠杆
-            "only_isolated": u.get("onlyIsolated", False),  # 是否仅支持逐仓
+        asset_map[symbol] = PerpAssetInfo(
+            # Static metadata
+            symbol=symbol,
+            size_decimals=u.get("szDecimals"),
+            max_leverage=u.get("maxLeverage"),
+            only_isolated=u.get("onlyIsolated", False),
 
-            # ============================================================
-            # 价格基准（风控 / 估值）
-            # ============================================================
-            "mark_price": safe_decimal(ctx.get("markPx")),     # 标记价格（强平/PnL）
-            "mid_price": safe_decimal(ctx.get("midPx")),       # 盘口中间价（可能 None）
-            "oracle_price": safe_decimal(ctx.get("oraclePx")), # 预言机价格（可能缺失）
-            "prev_day_price": safe_decimal(ctx.get("prevDayPx")),  # 前一日参考价
+            # Pricing / risk anchors
+            mark_price=safe_decimal(ctx.get("markPx")),
+            mid_price=safe_decimal(ctx.get("midPx")),
+            oracle_price=safe_decimal(ctx.get("oraclePx")),
+            prev_day_price=safe_decimal(ctx.get("prevDayPx")),
 
-            # ============================================================
-            # 资金费率（Funding）
-            # ============================================================
-            "funding_rate": safe_decimal(ctx.get("funding")),  # 当前 funding（可能 None）
-            "premium": safe_decimal(ctx.get("premium")),       # 溢价（可能缺失）
+            # Funding
+            funding_rate=safe_decimal(ctx.get("funding")),
+            premium=safe_decimal(ctx.get("premium")),
 
-            # ============================================================
-            # 市场参与度（资金 & 活跃度）
-            # ============================================================
-            "open_interest": safe_decimal(ctx.get("openInterest")),  # 未平仓量 OI
-            "day_notional_volume": safe_decimal(ctx.get("dayNtlVlm")),  # 24h 名义成交额
+            # Participation / activity
+            open_interest=safe_decimal(ctx.get("openInterest")),
+            day_notional_volume=safe_decimal(ctx.get("dayNtlVlm")),
 
-            # ============================================================
-            # 微结构 / 滑点（冲击价）
-            # ============================================================
-            "impact_bid": safe_decimal(impact_bid_raw),  # 冲击买价
-            "impact_ask": safe_decimal(impact_ask_raw),  # 冲击卖价
+            # Impact
+            impact_bid=safe_decimal(impact_bid_raw),
+            impact_ask=safe_decimal(impact_ask_raw),
 
-            # ============================================================
-            # 原始上下文（调试 / 回溯用）
-            # ============================================================
-            "raw": ctx
-        }
+            # Raw ctx
+            raw=ctx,
+        )
 
     return asset_map
