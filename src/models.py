@@ -167,38 +167,98 @@ class TechnicalLinesSnapshot:
 # 4. Strategy & Decision (策略决策核心)
 # =============================================================================
 
+
+
+
 @dataclass
 class Decision:
     """
     策略决策结果对象：由 decide_regime 生成
+    作用：作为策略“大脑”的输出，封装了所有下一步操作需要的指令和参数。
     """
-    # 核心指令
+
+    # ==========================================
+    # 1. 核心指令 (Core Instructions)
+    # ==========================================
     action: Action
+    # 最终的动作指令。
+    # 例如：Action.BUY (买入), Action.SELL (卖出), Action.HOLD (观望/持仓不动)。
+
     regime: MarketRegime
+    # 当前判定出的市场体制/状态。
+    # 例如：MarketRegime.TRENDing (趋势), MarketRegime.CHOOPY (震荡), MarketRegime.CRASH (暴跌)。
+    # 下游逻辑会根据这个状态选择不同的参数集（如趋势市用大止损，震荡市用小止盈）。
 
-    # 权限开关
+    # ==========================================
+    # 2. 策略逻辑开关 (Logic Permissons)
+    # ==========================================
     allow_trend: bool
+    # 是否激活趋势策略逻辑。
+    # True：允许追涨杀跌、突破交易；False：在震荡市中禁用趋势逻辑以防来回打脸。
+
     allow_mean: bool
+    # 是否激活均值回归策略逻辑。
+    # True：允许高抛低吸；False：在强趋势中禁用回归逻辑以防逆势抄底被套。
 
-    # ✅ 模式修饰符 (新增)
+    # ==========================================
+    # 3. 模式修饰符 (Modifiers)
+    # ==========================================
     strict_entry: bool = False
+    # ✅ 严格入场模式开关。
+    # True：提高开仓门槛（例如要求更多指标共振），用于市场方向不明朗时减少误操作。
+    # False：使用标准门槛，追求灵敏度。
 
-    # 执行权限
+    # ==========================================
+    # 4. 执行权限控制 (Execution Control)
+    # ==========================================
     allow_new_entry: bool = True
+    # 全局开仓锁。
+    # True：允许开启新的仓位。
+    # False：禁止开新仓（即使信号触发也不执行），通常用于重大风险事件前或亏损达到上限时。
+
     allow_manage: bool = True
+    # 仓位管理锁。
+    # True：允许调整现有持仓（如移动止损、减仓）。
+    # False：冻结现有持仓操作（极少使用，可能用于系统维护模式）。
 
-    # 动态风控
+    # ==========================================
+    # 5. 动态风控参数 (Dynamic Risk)
+    # ==========================================
     risk_scale: float = 1.0
+    # 仓位大小缩放系数（Position Sizing）。
+    # 1.0 = 标准仓位。
+    # < 1.0 (如 0.5)：降低风险，半仓操作（常用于高波动或信号弱时）。
+    # > 1.0：激进加仓（用于确定性极高时）。
+
     cooldown_scale: float = 1.0
+    # 交易冷却时间倍率。
+    # 用于调整两次交易之间的最小间隔。
+    # > 1.0：延长休息时间（防止在剧烈震荡中频繁磨损手续费）。
 
-    # 日志
+    # ==========================================
+    # 6. 可解释性与日志 (Logging)
+    # ==========================================
     reasons: List[str] = field(default_factory=list)
+    # 决策依据记录。
+    # 存储触发该决策的文本描述，例如 ["RSI超卖", "突破布林带上轨"]。
+    # 这里的 default_factory=list 是为了避免所有实例共享同一个列表。
 
-    # 上下文快照
+    # ==========================================
+    # 7. 上下文快照 (Context Snapshots)
+    # ==========================================
+    # 用于记录决策生成那一刻的市场数据，便于后续复盘分析（Review）
+
     adx: Optional[float] = None
-    vol_state: VolState = VolState.UNKNOWN
-    order_book: Optional[OrderBookInfo] = None
+    # 趋势强度指标 (Average Directional Index) 快照。
+    # 用于判断当时趋势是否强劲。
 
+    vol_state: VolState = VolState.UNKNOWN
+    # 波动率状态快照。
+    # 例如：Low (低波酝酿), High (高波剧烈), Extreme (极端行情)。
+
+    order_book: Optional[OrderBookInfo] = None
+    # 订单簿（盘口）快照。
+    # 包含买一卖一价、挂单深度等，用于分析当时的流动性是否充足。
 
 @dataclass(frozen=True)
 class TradePlan:
