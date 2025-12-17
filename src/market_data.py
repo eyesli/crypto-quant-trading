@@ -24,7 +24,7 @@ from ccxt import hyperliquid
 from ccxt.base.types import Position, Balances
 from hyperliquid.info import Info
 
-from src.models import OrderBookInfo, MarketRegime, TimingState, SlopeState, SlopeDir
+from src.models import OrderBookInfo, MarketRegime, TimingState, SlopeState,Slope
 import pandas as pd
 import pandas_ta as ta
 
@@ -125,10 +125,10 @@ def classify_trend_range(
 def classify_timing_state(df: pd.DataFrame, window: int = 200, k: float = 0.2) -> TimingState:
     def _state(series: Optional[pd.Series]) -> SlopeState:
         if series is None:
-            return SlopeState(state=SlopeDir.UNKNOWN, cur=None, eps=None)
+            return SlopeState(state=Slope.UNKNOWN, cur=None, eps=None)
         s = series.dropna()
         if len(s) < window:
-            return SlopeState(state=SlopeDir.UNKNOWN, cur=None, eps=None)
+            return SlopeState(state=Slope.UNKNOWN, cur=None, eps=None)
         #window=200（在 1h 下 ≈ 8.3 天
         w = s.iloc[-window:]
         cur = float(w.iloc[-1])
@@ -136,11 +136,11 @@ def classify_timing_state(df: pd.DataFrame, window: int = 200, k: float = 0.2) -
         std = float(w.std())
         eps = std * k if std > 0 else 0.0
         if cur > eps:
-            st = SlopeDir.UP
+            st = Slope.UP
         elif cur < -eps:
-            st = SlopeDir.DOWN
+            st = Slope.DOWN
         else:
-            st = SlopeDir.FLAT
+            st = Slope.FLAT
         return SlopeState(state=st, cur=cur, eps=eps)
 
     return TimingState(

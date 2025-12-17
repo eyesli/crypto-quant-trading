@@ -876,7 +876,7 @@ def decide_regime(
         allow_mean = False
 
     # --- ADX 过滤 (强度) ---
-    if adx is not None and adx < 20:
+    if adx_val < 20:
         allow_trend = False  # 绝对值太低，禁止趋势
 
     # --- Timing 过滤 (修正后) ---
