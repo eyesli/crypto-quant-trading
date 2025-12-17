@@ -814,8 +814,6 @@ def decide_regime(
         min_depth: float = 200_000,
         imbalance_limit: float = 0.8
 ) -> "Decision":
-
-
     timing = timing or TimingState()
     adx_slope_state = timing.adx_slope.state
     bbw_slope_state = timing.bbw_slope.state
@@ -927,6 +925,7 @@ def decide_regime(
     # =========================================================
     # Step 4) Risk Calculation & Final Check
     # =========================================================
+    # Step 4) Risk Calculation & Final Check
     if vol_state == VolState.HIGH:
         risk_scale, cooldown_scale = 0.6, 2.0
     elif vol_state == VolState.LOW:
@@ -934,9 +933,12 @@ def decide_regime(
     else:
         risk_scale, cooldown_scale = 1.0, 1.0
 
-    # ADX 回调期降仓
+    # 2) 动态修正
+    # A) 趋势动能减弱 -> 降仓
     if adx_slope_state == Slope.DOWN and allow_trend and adx_val > 25:
         risk_scale *= 0.75
+
+    # B) 狙击模式 -> 试错仓
     if vol_state == VolState.LOW and strict_entry:
         risk_scale *= 0.7
 
