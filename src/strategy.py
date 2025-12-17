@@ -22,7 +22,7 @@ from src.models import (
     TechnicalLinesSnapshot,
     TrendLineSignal,
     VolatilitySignal,
-    VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState,
+    VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState, TimingState, Slope,
 )
 
 
@@ -800,7 +800,7 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
     return final, dbg
 
 
-from typing import Optional, Dict, List
+from typing import Optional, List
 
 
 def decide_regime(
@@ -808,7 +808,7 @@ def decide_regime(
         adx: Optional[float],
         vol_state: "VolState",
         order_book: Optional["OrderBookInfo"],
-        timing: Dict,
+        timing: Optional["TimingState"],
         max_spread_bps: float,
 ) -> "Decision":
     adx_val = adx if adx is not None else 0.0
@@ -823,9 +823,9 @@ def decide_regime(
         ask_depth = order_book.ask_depth_value or 0.0
         imbalance = order_book.imbalance
     depth = bid_depth + ask_depth
-    timing = timing or {}
-    adx_slope_state = timing.get("adx_slope", {}).get("state")
-    bbw_slope_state = timing.get("bbw_slope", {}).get("state")
+    timing = timing or TimingState()
+    adx_slope_state = timing.adx_slope.state
+    bbw_slope_state = timing.bbw_slope.state
 
     # 初始开关
     allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
@@ -870,7 +870,7 @@ def decide_regime(
         allow_mean = False  # 高波动不做均值
     elif vol_state == VolState.LOW:
         # 低波动：如果不扩张，开启狙击模式 (strict_entry)
-        if bbw_slope_state != "UP":
+        if bbw_slope_state != Slope.UP:
             strict_entry = True
         # 低波动通常不做均值
         allow_mean = False
@@ -880,8 +880,8 @@ def decide_regime(
         allow_trend = False  # 绝对值太低，禁止趋势
 
     # --- Timing 过滤 (修正后) ---
-    if adx_slope_state == "DOWN" and allow_trend:
-        # 情况 A: 瘦死的骆驼比马大 (ADX > 25) -> 视为“回踩/蓄势”
+    if adx_slope_state == Slope.DOWN and allow_trend:
+        # A) ADX 仍强（>25）：当作趋势回踩/蓄势，保留趋势权限，但在 Step4 降风险
         if adx_val > 25:
             pass  # 放行，交给 Step 4 降权
         # 情况 B: 本来就弱还在跌 (ADX <= 25) -> 视为“趋势结束”
@@ -889,7 +889,7 @@ def decide_regime(
             allow_trend = False
 
             # 布林带开口瞬间，不要做均值
-    if bbw_slope_state == "UP" and base in (MarketRegime.RANGE, MarketRegime.MIXED):
+    if bbw_slope_state == Slope.UP and base in (MarketRegime.RANGE, MarketRegime.MIXED):
         allow_mean = False
 
     # =========================================================
@@ -919,7 +919,7 @@ def decide_regime(
         risk_scale, cooldown_scale = 1.0, 1.0
 
     # ADX 回调降权
-    if adx_slope_state == "DOWN" and allow_trend and adx_val > 25:
+    if adx_slope_state == Slope.DOWN and allow_trend and adx_val > 25:
         risk_scale *= 0.75
 
     # 最终裁决：如果有软拒绝理由
@@ -929,7 +929,7 @@ def decide_regime(
             regime=base,
             allow_trend=allow_trend,
             allow_mean=allow_mean,
-            strict_entry=strict_entry,  # ✅ 正确传递
+            strict_entry=strict_entry,
             allow_new_entry=False,
             allow_manage=True,
             risk_scale=risk_scale,

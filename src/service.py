@@ -20,7 +20,7 @@ LEVERAGE = 5.0
 
 MAX_SPREAD_BPS = 2.0
 
-def start_trade(exchange: Exchange,state: RegimeState) -> None:
+def start_trade(exchange: Exchange, state: RegimeState) -> None:
     """
     单轮运行：
     - 拉取账户 + 市场数据
@@ -28,7 +28,7 @@ def start_trade(exchange: Exchange,state: RegimeState) -> None:
     - 执行器（可 DRY_RUN）
     """
 
-    account_overview = fetch_account_overview(exchange.info,os.environ.get("HL_WALLET_ADDRESS"))
+    account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"))
 
     candles = candles_last_n_closed(exchange.info, SYMBOL, "1h", limit=500)
     ohlcv = hl_candles_to_ohlcv_list(candles)
@@ -41,8 +41,8 @@ def start_trade(exchange: Exchange,state: RegimeState) -> None:
     timing = classify_timing_state(indicators)
     # print(vol_dbg)
     # print(timing)
-    order_book = fetch_order_book_info(exchange.info,SYMBOL)
-    regime = decide_regime(base, adx, vol_state, order_book,timing=timing,max_spread_bps=MAX_SPREAD_BPS)
+    order_book = fetch_order_book_info(exchange.info, SYMBOL)
+    regime = decide_regime(base, adx, vol_state, order_book, timing=timing, max_spread_bps=MAX_SPREAD_BPS)
 
     perp_asset_map = build_perp_asset_map(exchange, ["ETH", "BTC", "SOL"])
 

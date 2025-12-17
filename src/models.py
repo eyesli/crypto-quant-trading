@@ -42,9 +42,38 @@ class VolState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class Slope(str, Enum):
+    """
+    Trend/vol timing direction for smoothed slope series.
+    """
+    UP = "UP"
+    DOWN = "DOWN"
+    FLAT = "FLAT"
+    UNKNOWN = "UNKNOWN"
+
+
 # =============================================================================
 # 2. Market Data Structures (行情数据结构)
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class SlopeState:
+    """
+    A typed snapshot of a slope series' current direction and thresholding.
+    """
+    state: Slope = Slope.UNKNOWN
+    cur: Optional[float] = None
+    eps: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class TimingState:
+    """
+    Typed timing state for regime decisions.
+    """
+    adx_slope: SlopeState = field(default_factory=SlopeState)
+    bbw_slope: SlopeState = field(default_factory=SlopeState)
 
 @dataclass(frozen=True)
 class OrderBookInfo:
@@ -181,12 +210,9 @@ class Decision:
     # 1. 核心指令 (Core Instructions)
     # ==========================================
     action: Action
-    # 最终的动作指令。
-    # 例如：Action.BUY (买入), Action.SELL (卖出), Action.HOLD (观望/持仓不动)。
 
     regime: MarketRegime
     # 当前判定出的市场体制/状态。
-    # 例如：MarketRegime.TRENDing (趋势), MarketRegime.CHOOPY (震荡), MarketRegime.CRASH (暴跌)。
     # 下游逻辑会根据这个状态选择不同的参数集（如趋势市用大止损，震荡市用小止盈）。
 
     # ==========================================
