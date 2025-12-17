@@ -2,7 +2,7 @@
 主入口文件
 启动 service 服务
 """
-
+import os
 import sys
 import time
 
@@ -12,24 +12,27 @@ from hyperliquid.utils.constants import MAINNET_API_URL
 
 from src.models import RegimeState
 from src.service import start_trade
+from dotenv import load_dotenv
 
-HL_WALLET_ADDRESS = "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D"
-HL_PRIVATE_KEY = "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0"
+from src.tools.api import call_deepseek
 
 
 def main() -> None:
     """
     CLI 入口（pyproject.toml 的 [project.scripts] 会调用这里）。
     """
-
-
+    load_dotenv()
+    deepseek = call_deepseek("你是量化交易助手，只能输出符合 JSON Schema 的结果。",
+                             "ADX=32, NATR=1.1%, spread=5bps，给交易决策。")
+    print(deepseek)
+    sys.exit(0)
     try:
-        wallet = Account.from_key(HL_PRIVATE_KEY)
+        wallet = Account.from_key(os.environ.get("HL_PRIVATE_KEY"))
 
         exchange = Exchange(
             wallet=wallet,
             base_url=MAINNET_API_URL,
-            account_address=HL_WALLET_ADDRESS,
+            account_address=os.environ.get("HL_WALLET_ADDRESS"),
             timeout=10.0,
         )
         state = RegimeState()

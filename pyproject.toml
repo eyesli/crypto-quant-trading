@@ -25,16 +25,13 @@ requires-python = ">=3.12"
 dependencies = [
     # 加密货币交易所统一接口库
     "ccxt>=4.5.28",
-
     # Hyperliquid 官方 Python SDK
     "hyperliquid-python-sdk>=0.21.0",
-
     # 数据分析核心库
+    "openai>=2.13.0",
     "pandas>=2.3.3",
-
     # 技术指标库（TA：ADX / ATR / RSI 等）
     "pandas-ta>=0.4.71b0",
-
     # 加载 .env 环境变量文件
     "python-dotenv>=1.0.0",
 ]

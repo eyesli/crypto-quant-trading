@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 from hyperliquid.exchange import Exchange
@@ -18,7 +19,6 @@ RISK_PCT = 0.01
 LEVERAGE = 5.0
 
 MAX_SPREAD_BPS = 2.0
-HL_WALLET_ADDRESS = "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D"
 
 TF_MS = {
     "1m": 60_000,
@@ -37,7 +37,7 @@ def start_trade(exchange: Exchange,state: RegimeState) -> None:
     - 执行器（可 DRY_RUN）
     """
 
-    account_overview = fetch_account_overview(exchange.info,HL_WALLET_ADDRESS)
+    account_overview = fetch_account_overview(exchange.info,os.environ.get("HL_WALLET_ADDRESS"))
 
     candles = candles_last_n_closed(exchange.info, SYMBOL, "1h", limit=500)
     ohlcv = hl_candles_to_ohlcv_list(candles)
