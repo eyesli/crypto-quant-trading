@@ -655,10 +655,10 @@ def decide_regime(
 
     if hard_reasons:
         return Decision(
-            action=Action.STOP_ALL,
+            action=Action.NO_NEW_ENTRY,
             regime=base,
             allow_trend=False, allow_mean=False,
-            allow_new_entry=False, allow_manage=False,
+            allow_new_entry=False, allow_manage=True,
             risk_scale=0.0, cooldown_scale=2.0,
             reasons=hard_reasons,
             adx=adx, vol_state=vol_state, order_book=order_book
@@ -681,11 +681,9 @@ def decide_regime(
     elif vol_state == VolState.LOW:
         if bbw_slope_state != Slope.UP:
             strict_entry = True
-
-        # 修正点：同上
-        if allow_mean:
-            allow_mean = False
-            gate_logs.append("gate: low vol disables mean")
+            gate_logs.append("gate: low vol -> strict entry (no expansion)")
+        else:
+            gate_logs.append("gate: low vol but bbw expanding -> ok")
 
     # --- ADX 强度过滤 ---
     if adx_val < 20:
