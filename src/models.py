@@ -26,9 +26,18 @@ class Action(str, Enum):
 
 
 class MarketRegime(str, Enum):
-    TREND = "trend"  # 明确趋势
-    RANGE = "range"  # 明确震荡
-    MIXED = "mixed"  # 方向不稳定 / 切换中
+    TREND = "trend"
+    # 已确认方向性优势：
+    # 价格存在持续的单向推进，趋势策略有统计优势
+
+    MIXED = "mixed"
+    # 趋势过渡期：转变期
+    # 方向性优势正在衰减或形成中，极易被来回扫
+
+    RANGE = "range"
+    # 无方向性优势：
+    # 多空推进反复被否定，趋势策略在此长期失效
+
     UNKNOWN = "unknown"  # 数据不足 / 不判断
 
 

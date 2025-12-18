@@ -132,9 +132,10 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     # 20日高低点 (用于突破判断)
     df["n_high"] = close.rolling(20).max()
     df["n_low"] = close.rolling(20).min()
-    df["breakout_up"] = close.ge(df["n_high"]).astype(int)  # >=
-    df["breakout_down"] = close.le(df["n_low"]).astype(int)  # <=
 
+    #实盘/回测专业写法要用上一根的通道：
+    df["breakout_up"] = close.gt(df["n_high"].shift(1)).astype("int8")
+    df["breakout_down"] = close.lt(df["n_low"].shift(1)).astype("int8")
     # 分形高低点 (Swing High/Low 独立K线形态)
     df["swing_high_fractal"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
     df["swing_low_fractal"] = low[(low.shift(1) > low) & (low.shift(-1) > low)]

@@ -77,8 +77,8 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         now_ts=now_ts
     )
     #
-    # print("🧭 regime:", regime)
-    # print("🧭 regime:", signal)
+    print("🧭 regime:", regime)
+    print("🧭 signal:", signal)
     state.prev_base = base
     # decide_regime();
     # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
