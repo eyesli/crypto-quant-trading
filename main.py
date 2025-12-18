@@ -29,10 +29,10 @@ def main() -> None:
             timeout=10.0,
         )
         state = RegimeState()
-
-        while True:
-            start_trade(exchange,state)
-            time.sleep(1200)
+        start_trade(exchange, state)
+        # while True:
+        #
+        #     time.sleep(1200)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")
         sys.exit(0)

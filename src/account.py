@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 
 from hyperliquid.info import Info
 
+from src.tools.system_config import measure_time
+
 
 @dataclass
 class AccountOverview:
@@ -153,6 +155,7 @@ def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
 }
 
 '''
+@measure_time
 def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     """
     用官方 SDK 的 Info 接口获取：

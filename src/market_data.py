@@ -28,12 +28,15 @@ from src.models import OrderBookInfo, MarketRegime, TimingState, SlopeState, Slo
 import pandas as pd
 import pandas_ta as ta
 
+from src.tools.system_config import measure_time
+
+
 @dataclass
 class AccountOverview:
     balances: Balances
     positions: List[Position]
 
-
+@measure_time
 def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     # 基础数据
@@ -184,6 +187,7 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
 BaseRegime = Literal["trend", "range", "mixed", "unknown"]
 
+@measure_time
 def classify_trend_range(
     df: pd.DataFrame,
     prev: MarketRegime = MarketRegime.UNKNOWN,
@@ -277,7 +281,7 @@ from typing import Optional
 
 
 # 假设 OrderBookInfo 和 Info 类已经定义好了
-
+@measure_time
 def fetch_order_book_info(info:Info, symbol: str, depth_pct: float = 0.005) -> Optional[OrderBookInfo]:
     """
     获取盘口微观数据 (适配 Hyperliquid l2_snapshot 原生结构)
@@ -385,7 +389,7 @@ def safe_decimal(x: Any, default: str = "0") -> Decimal:
     # 避免 float 精度问题：统一转 str 再进 Decimal
     return Decimal(str(x))
 
-
+@measure_time
 def build_perp_asset_map(
     exchange,
     allowed_symbols: Optional[Iterable[str]] = None

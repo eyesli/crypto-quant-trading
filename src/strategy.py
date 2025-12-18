@@ -25,6 +25,7 @@ from src.models import (
     VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState, TimingState, Slope,
     PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot,
 )
+from src.tools.system_config import measure_time
 
 
 def _validate_timeframe_weights(timeframes: list[str]) -> dict[str, float]:
@@ -466,205 +467,6 @@ def analyze_technical_lines_single_tf(df: Optional[pd.DataFrame]) -> TechnicalLi
     )
 
 
-def summarize_technical_lines_to_score(signals: TechnicalLinesSnapshot) -> Dict[str, Any]:
-    """
-    ✅ 汇总器：把“技术线分析结果”统一转换成 score/label/regime。
-
-    注意：这一步才做“打分”，方便你把所有技术线都看完后，统一调整权重与规则。
-    """
-    if not signals.ok:
-        return {
-            "score": 0.0,
-            "label": "数据不足",
-            "regime": "mixed",
-            "detail": "；".join(signals.notes or ("数据不足",)),
-            "components": {},
-        }
-
-    close = float(signals.close or 0.0)
-    _ = close  # close 目前只用于解释/扩展；保留变量方便你未来加规则
-
-    notes = list(signals.notes or ())
-    components: Dict[str, float] = {}
-
-    # 先从各条技术线提取“方向/强弱”的结构化信息
-    trend = signals.trend
-    momentum = signals.momentum
-    breakout = signals.breakout
-    volatility = signals.volatility
-    overheat = signals.overheat
-    volume = signals.volume
-    structure = signals.structure
-    adx = float(signals.adx or 0.0)
-
-    score = 0.0
-
-    # -------------------------
-    # 1) 趋势线（均线）
-    # -------------------------
-    c = 0.0
-    bias = float(trend.bias_to_ema or 0.0)
-    ema_gt_sma = trend.ema_gt_sma
-    ema_slope_5 = trend.ema_slope_5
-
-    if bias > 0.004:
-        c += 0.25
-    elif bias < -0.004:
-        c -= 0.25
-
-    if ema_gt_sma is True:
-        c += 0.12
-    elif ema_gt_sma is False:
-        c -= 0.12
-
-    if isinstance(ema_slope_5, (int, float)):
-        if ema_slope_5 > 0.002:
-            c += 0.10
-        elif ema_slope_5 < -0.002:
-            c -= 0.10
-
-    components["trend"] = c
-    score += c
-
-    # -------------------------
-    # 2) 动能线（MACD）
-    # -------------------------
-    c = 0.0
-    macd_dir = int(momentum.direction or 0)
-    strengthening = bool(momentum.strengthening)
-    weakening = bool(momentum.weakening)
-    if macd_dir > 0:
-        c += 0.16
-    elif macd_dir < 0:
-        c -= 0.16
-    if strengthening and macd_dir != 0:
-        c += 0.05 if macd_dir > 0 else -0.05
-    if weakening and macd_dir != 0:
-        c -= 0.03 if macd_dir > 0 else -0.03
-
-    components["momentum"] = c
-    score += c
-
-    # -------------------------
-    # 3) 趋势强度线（ADX）——用于 regime，同时对 score 做轻微校准
-    # -------------------------
-    if adx >= 28:
-        components["trend_strength"] = 0.06
-        score += 0.06
-    elif 0 < adx <= 18:
-        components["trend_strength"] = -0.06
-        score -= 0.06
-    else:
-        components["trend_strength"] = 0.0
-
-    # -------------------------
-    # 4) 突破线（新鲜度+放量）
-    # -------------------------
-    c = 0.0
-    fresh_up = bool(breakout.fresh_up)
-    fresh_down = bool(breakout.fresh_down)
-    vol = float(breakout.vol_spike_ratio or 0.0)
-    bu = int(breakout.breakout_up or 0)
-    bd = int(breakout.breakout_down or 0)
-
-    if fresh_up and vol >= 1.5:
-        c += 0.18
-    elif fresh_down and vol >= 1.5:
-        c -= 0.18
-    else:
-        if bu == 1 and vol >= 1.5:
-            c += 0.06
-        if bd == 1 and vol >= 1.5:
-            c -= 0.06
-
-    components["breakout"] = c
-    score += c
-
-    # -------------------------
-    # 5) 波动线（布林带宽度）
-    # -------------------------
-    c = 0.0
-    squeeze = bool(volatility.squeeze)
-    expansion = bool(volatility.expansion)
-    if squeeze:
-        # 挤压期更容易“来回打脸”，这里弱化整体分数（相当于降低置信度）
-        c -= 0.05
-        score *= 0.85
-    elif expansion:
-        c += 0.05
-    components["vol_regime"] = c
-    score += c
-
-    # -------------------------
-    # 6) 过热线（RSI）——只做“追单风险”矫正
-    # -------------------------
-    c = 0.0
-    if overheat.rsi_14 is not None:
-        overbought = bool(overheat.overbought)
-        oversold = bool(overheat.oversold)
-        # 只在 score 指向同方向时惩罚（防追涨/追跌）
-        if score > 0.15 and overbought:
-            c -= 0.08
-        if score < -0.15 and oversold:
-            c += 0.08  # 做空时 RSI 极低，意味着追空风险↑，因此往 0 拉回
-    components["overheat"] = c
-    score += c
-
-    # -------------------------
-    # 7) 价量线（OBV）——确认项
-    # -------------------------
-    c = 0.0
-    obv_dir = int(volume.direction or 0)
-    if obv_dir > 0:
-        c += 0.04
-    elif obv_dir < 0:
-        c -= 0.04
-    components["obv"] = c
-    score += c
-
-    # -------------------------
-    # 8) 成本/结构线（AVWAP / POC）——确认+风险提示
-    # -------------------------
-    c = 0.0
-    bias_avwap = structure.bias_to_avwap
-    if isinstance(bias_avwap, (int, float)):
-        if bias_avwap > 0.008:
-            c += 0.06
-        elif bias_avwap < -0.008:
-            c -= 0.06
-    components["avwap"] = c
-    score += c
-
-    poc_d = structure.price_to_poc_pct
-    if isinstance(poc_d, (int, float)) and abs(poc_d) > 0.02:
-        # 距离 POC 太远时，追单风险上升，轻微往 0 拉回
-        score *= 0.92
-
-    # clamp
-    score = max(min(float(score), 1.0), -1.0)
-
-    # regime + label
-    if adx >= 25:
-        regime = "trend"
-    elif 0 < adx <= 18:
-        regime = "range"
-    else:
-        regime = "mixed"
-
-    if score >= 0.6:
-        label = "强多头趋势"
-    elif score >= 0.2:
-        label = "偏多 / 弱趋势"
-    elif score > -0.2:
-        label = "震荡 / 中性"
-    elif score > -0.6:
-        label = "偏空 / 弱趋势"
-    else:
-        label = "强空头趋势"
-
-    return {"score": score, "label": label, "regime": regime, "detail": "；".join(notes), "components": components}
-
-
 def _equity_usdc(account: AccountOverview) -> float:
     total = (account.balances or {}).get("total", {}) or {}
     return float(total.get("USDC") or total.get("USDT") or 0.0)
@@ -803,7 +605,7 @@ def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
 
 from typing import Optional, List
 
-
+@measure_time
 def decide_regime(
         base: "MarketRegime",
         adx: Optional[float],
@@ -1198,7 +1000,7 @@ def score_signal(dir_res, trg_res, val_res, regime) -> Tuple[float, List[str]]:
 
     return score, reasons
 
-
+@measure_time
 def build_signal(df_1h, df_15m, df_5m, regime, asset_info, now_ts: float) -> SignalSnapshot:
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)

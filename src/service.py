@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import time
 from typing import Dict
@@ -11,6 +12,7 @@ from src.market_data import ohlcv_to_df, compute_technical_factors, classify_tre
     fetch_order_book_info, build_perp_asset_map
 from src.models import RegimeState, Action, PerpAssetInfo, Decision
 from src.strategy import classify_vol_state, decide_regime, build_signal
+from src.tools.system_config import measure_time
 from src.tools.utils import candles_last_n_closed, hl_candles_to_ohlcv_list
 
 SYMBOL = "ETH"
@@ -21,7 +23,7 @@ RISK_PCT = 0.01
 LEVERAGE = 5.0
 
 MAX_SPREAD_BPS = 2.0
-
+@measure_time
 def start_trade(exchange: Exchange, state: RegimeState) -> None:
     """
     单轮运行：
@@ -74,21 +76,11 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         asset_info=asset_info,
         now_ts=now_ts
     )
-
-    print("🧭 regime:", regime)
-    print("🧭 regime:", signal)
+    #
+    # print("🧭 regime:", regime)
+    # print("🧭 regime:", signal)
     state.prev_base = base
     # decide_regime();
     # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     # print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)
-# def save_regime_state(state: RegimeState, path=".json"):
-#     with open(path, "w") as f:
-#         f.write(state.model_dump_json())
-#
-# def load_regime_state() -> RegimeState:
-#     try:
-#         with open(".json", "r") as f:
-#             return RegimeState.model_validate_json(f.read())
-#     except FileNotFoundError:
-#         raise

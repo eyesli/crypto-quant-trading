@@ -7,8 +7,11 @@ Keep it dependency-light to avoid circular imports.
 
 from __future__ import annotations
 
+import functools
 import time
 from typing import Any, Iterable
+
+from src.tools.system_config import measure_time
 
 # Timeframe -> milliseconds mapping
 TIMEFRAME_MS: dict[str, int] = {
@@ -21,6 +24,9 @@ TIMEFRAME_MS: dict[str, int] = {
 }
 
 
+
+
+@measure_time
 def candles_last_n_closed(
     info: Any,
     name: str,
