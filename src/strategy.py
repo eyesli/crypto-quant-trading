@@ -497,7 +497,7 @@ def score_signal(dir_res, trg_res, val_res, regime) -> Tuple[float, List[str]]:
     return score, reasons
 
 @measure_time
-def build_signal(df_1h, df_15m, df_5m, regime, asset_info, now_ts: float) -> SignalSnapshot:
+def build_signal(df_1h, df_15m, df_5m, regime:"Decision", asset_info, now_ts: float) -> SignalSnapshot:
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)
     val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info)

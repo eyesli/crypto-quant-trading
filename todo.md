@@ -38,4 +38,32 @@
 风控需要强制停机（比如系统异常）
 这种才用 STOP_ALL + allow_manage=False。
 
+作为 以后的优化项吧。
+如果你想把它提升到“更像机构/职业化”的版本（最推荐的 5 个改动）
+把 spread/depth/imbalance 阈值改成 rolling 分位数（跨币种立刻稳）
+SOFT STOP 改成分级：degrade vs block（减少错杀）
+risk_scale 连续化（避免边界跳变）
+明确 order book 指标口径（depth 的定义固定）
+把 gate 命中统计打通回测（用数据证明规则有效）
+
+先把 imbalance 的定义标准化（比如 (bid-ask)/(bid+ask) 还是 bid/(bid+ask)）
+
+然后在 debug 输出里长期观察分布，再定阈值
+否则会出现：你以为是“极端”，其实是计算口径导致的“常态”。
+
+reasons 建议分层输出（hard / gate / soft）而不是混在一起
+
+
+空头成立需要的 4 件事（你这里全有）：
+
+✅ 上一个趋势被暴力破坏
+
+✅ 反抽失败（EMA 压制）
+
+✅ 形成 lower high
+
+✅ 下破反抽低点
+
+1h 看大趋势   15m 看真正的趋势。 5m 精准入场 精准止损 提前发现“这笔单要不对劲了”
+
 

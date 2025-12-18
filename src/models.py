@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 # 1. Enums (基础枚举)
 # =============================================================================
 
-Side = Literal["buy", "sell"]
+# Side = Literal["buy", "sell"]
 PositionSide = Literal["long", "short", "flat"]
 PlanAction = Literal["OPEN", "CLOSE", "HOLD", "FLIP"]
 OrderType = Literal["market", "limit"]
@@ -390,6 +390,7 @@ from typing import List, Optional
 class Side(str, Enum):
     LONG = "LONG"
     SHORT = "SHORT"
+    FLAT = "FLAT"  # 明确的空仓信号
     NONE = "NONE"
 
 @dataclass
