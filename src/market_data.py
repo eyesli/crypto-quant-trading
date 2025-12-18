@@ -72,7 +72,7 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     # 2. 均值回归 (Mean Reversion)
     # ==========================================
     # 布林带 [原有策略核心依赖]
-    bbands = ta.bbands(close, length=20, std=2.0)
+    bbands = ta.bbands(close, length=20, lower_std=2.0, upper_std=2.0)
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
@@ -126,12 +126,11 @@ def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
     # [原有策略依赖] 10日高低点 (用于结构止损)
     df["swing_low_10"] = low.rolling(10).min()
     df["swing_high_10"] = high.rolling(10).max()
-
     # 20日高低点 (用于突破判断)
     df["n_high"] = close.rolling(20).max()
     df["n_low"] = close.rolling(20).min()
-    df["breakout_up"] = (close >= df["n_high"]).astype(int)
-    df["breakout_down"] = (close <= df["n_low"]).astype(int)
+    df["breakout_up"] = close.ge(df["n_high"]).astype(int)  # >=
+    df["breakout_down"] = close.le(df["n_low"]).astype(int)  # <=
 
     # 分形高低点 (Swing High/Low 独立K线形态)
     df["swing_high_fractal"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
