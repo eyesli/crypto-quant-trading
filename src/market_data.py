@@ -34,59 +34,154 @@ class AccountOverview:
     positions: List[Position]
 
 
+def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
 
-def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    high, low, close = df["high"], df["low"], df["close"]
+    # 基础数据
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"]
 
-    # --- 1) ADX（结构：趋势强度） ---
+    # ==========================================
+    # 1. 趋势与动量 (Trend & Momentum)
+    # ==========================================
+    # 均线组
+    df["ema_20"] = ta.ema(close, length=20)  # [原有策略核心依赖]
+    df["sma_50"] = ta.sma(close, length=50)
+    df["ema_50"] = ta.ema(close, length=50)
+    df["wma_50"] = ta.wma(close, length=50)
+
+    # MACD [新增: 动能判断]
+    macd = ta.macd(close)
+    df["macd"] = macd["MACD_12_26_9"]
+    df["macd_signal"] = macd["MACDs_12_26_9"]
+    df["macd_hist"] = macd["MACDh_12_26_9"]
+
+    # 其他动能
+    df["roc_10"] = ta.roc(close, length=10)
+    df["mom_10"] = ta.mom(close, length=10)
+    df["rsi_14"] = ta.rsi(close, length=14)
+
+    # ADX [原有策略核心依赖]
     adx_df = ta.adx(high, low, close, length=14)
     df["adx_14"] = adx_df["ADX_14"]
+    df["dmp_14"] = adx_df["DMP_14"]
+    df["dmn_14"] = adx_df["DMN_14"]
 
-    # --- 2) ATR / NATR（波动：相对价格振幅） ---
-    df["atr_14"] = ta.atr(high, low, close, length=14)
-
-    # 注意：这里是“比例”（例如 0.008 = 0.8%） 0.4–0.8%正常 <0.4%	非常安静  0.8–1.2%偏活跃 > 1.2%很猛 / 容易扫
-    df["natr_14"] = df["atr_14"] / close
-    df["natr_ema"] = ta.ema(df["natr_14"], length=10)
-    # 如果你希望列本身就是“百分比数值”（0.8 代表 0.8%），就用这一行替换上面那行：
-    # df["natr_14"] = (df["atr_14"] / close) * 100.0
-
-    # --- 3) Bollinger Bands（结构/波动：宽度 & 位置） ---
-    bbands = ta.bbands(close, length=20, lower_std=2.0, upper_std=2.0)
+    # ==========================================
+    # 2. 均值回归 (Mean Reversion)
+    # ==========================================
+    # 布林带 [原有策略核心依赖]
+    bbands = ta.bbands(close, length=20, std=2.0)
     df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
     df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
     df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
+    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽
+    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # %B
 
-    # BBB 通常是带宽（很多实现是 (upper-lower)/mid * 100），
-    # 所以你看到 1~4 很可能就是“百分比带宽 1%~4%”
-    df["bb_width"] = bbands["BBB_20_2.0_2.0"]
-    df["bb_percent"] = bbands["BBP_20_2.0_2.0"]
+    # 肯特纳通道 (Keltner Channel)
+    kelt = ta.kc(high, low, close, length=20)
+    df["kc_mid"] = kelt["KCBe_20_2"]
+    df["kc_upper"] = kelt["KCUe_20_2"]
+    df["kc_lower"] = kelt["KCLe_20_2"]
 
-    # --- 4) Timing：平滑后求 slope（强烈建议） ---
-    # 先 EMA 平滑，再 diff，避免 slope 抖动
+    # VWAP & AVWAP
+    df["vwap"] = ta.vwap(high, low, close, vol)
+    
+    # AVWAP: 全局成交量加权均价 (简单的全历史版本)
+    cum_pv = (close * vol).cumsum()
+    cum_vol = vol.cumsum()
+    df["avwap_full"] = cum_pv / cum_vol
+
+    # Z-Score (价格相对20日均线的标准差倍数)
+    mean_20 = close.rolling(20).mean()
+    std_20 = close.rolling(20).std()
+    df["zscore_20"] = (close - mean_20) / std_20
+
+    # Williams %R
+    df["williams_r"] = ta.willr(high, low, close, length=14)
+
+    # ==========================================
+    # 3. 波动率 (Volatility)
+    # ==========================================
+    df["atr_14"] = ta.atr(high, low, close, length=14)
+    df["natr_14"] = df["atr_14"] / close  # 标准化ATR
+
+    # [原有策略依赖] NATR平滑
+    df["natr_ema"] = ta.ema(df["natr_14"], length=10)
+
+    # 历史波动率 (Historical Volatility)
+    log_ret = (close / close.shift(1)).apply(lambda x: math.log(x) if x > 0 else 0)
+    df["hv_20"] = log_ret.rolling(20).std()
+    df["hv_100"] = log_ret.rolling(100).std()
+    df["hv_ratio"] = df["hv_20"] / df["hv_100"]
+
+    # 分布特征 (Skew/Kurt)
+    df["ret_skew_50"] = log_ret.rolling(50).skew()
+    df["ret_kurt_50"] = log_ret.rolling(50).kurt()
+
+    # ==========================================
+    # 4. 结构与形态 (Structure & Pattern)
+    # ==========================================
+    # [原有策略依赖] 10日高低点 (用于结构止损)
+    df["swing_low_10"] = low.rolling(10).min()
+    df["swing_high_10"] = high.rolling(10).max()
+
+    # 20日高低点 (用于突破判断)
+    df["n_high"] = close.rolling(20).max()
+    df["n_low"] = close.rolling(20).min()
+    df["breakout_up"] = (close >= df["n_high"]).astype(int)
+    df["breakout_down"] = (close <= df["n_low"]).astype(int)
+
+    # 分形高低点 (Swing High/Low 独立K线形态)
+    df["swing_high_fractal"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
+    df["swing_low_fractal"] = low[(low.shift(1) > low) & (low.shift(-1) > low)]
+
+    # ==========================================
+    # 5. 价量分析 (Volume)
+    # ==========================================
+    # [原有策略依赖] 放量判断
+    df["vol_sma_20"] = ta.sma(vol, length=20)
+    df["vol_ratio"] = vol / df["vol_sma_20"]  # 兼容旧名
+    df["vol_spike_ratio"] = df["vol_ratio"]   # 兼容新名
+
+    # 突破+放量
+    df["breakout_up_with_vol"] = (
+        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
+    ).astype(int)
+
+    # OBV
+    df["obv"] = ta.obv(close, vol)
+
+    # 简易 POC (Point of Control)
+    price_min = close.min()
+    price_max = close.max()
+    if price_max > price_min:
+        bins = 30
+        bin_size = (price_max - price_min) / bins
+        bin_index = ((close - price_min) / bin_size).astype(int).clip(0, bins - 1)
+        vol_profile = vol.groupby(bin_index).sum()
+        poc_bin = vol_profile.idxmax()
+        poc_price = float(price_min + (poc_bin + 0.5) * bin_size)
+        df["poc_full"] = poc_price
+        df["price_to_poc_pct"] = (close - poc_price) / poc_price
+    else:
+        df["poc_full"] = float("nan")
+        df["price_to_poc_pct"] = float("nan")
+
+    # ==========================================
+    # 6. 环境斜率判定 (Timing Logic - Critical)
+    # ==========================================
+    # [原有策略核心依赖] 必须做EMA平滑后再求Diff，否则噪音太大
     ema_len = 10
     df["adx_ema"] = ta.ema(df["adx_14"], length=ema_len)
     df["bbw_ema"] = ta.ema(df["bb_width"], length=ema_len)
 
-    # slope：近端变化方向（>0 增强 / <0 衰减） 当前K线的 adx_ema - 上一个 adx_ema
+    # 计算斜率
     df["adx_slope"] = df["adx_ema"].diff()
     df["bbw_slope"] = df["bbw_ema"].diff()
 
-    df["ema_20"] = ta.ema(close, length=20)
-    df["ema_50"] = ta.ema(close, length=50)
-
-    df["vol_sma_20"] = ta.sma(df["volume"], length=20)
-    df["vol_ratio"] = df["volume"] / df["vol_sma_20"]
-
-    df["rsi_14"] = ta.rsi(close, length=14)
-
-    df["vwap"] = ta.vwap(high, low, close, df["volume"])
-
-    N = 10
-    df["swing_low_10"] = df["low"].rolling(N).min()
-    df["swing_high_10"] = df["high"].rolling(N).max()
     return df
-
 
 BaseRegime = Literal["trend", "range", "mixed", "unknown"]
 
@@ -176,149 +271,6 @@ def ohlcv_to_df(ohlcv: List[List[float]]) -> pd.DataFrame:
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert('Asia/Shanghai')
     df.set_index("timestamp", inplace=True)
-    return df
-
-def compute_technical_factors(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    在 df 上追加各种技术指标列，使用 pandas_ta。
-    你可以按需删减或扩展。
-    """
-
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    vol = df["volume"]
-
-    # ===== 1. 趋势与动量因子 =====
-    df["sma_50"] = ta.sma(close, length=50)
-    df["ema_50"] = ta.ema(close, length=50)
-    df["wma_50"] = ta.wma(close, length=50)
-
-    macd = ta.macd(close)
-    df["macd"] = macd["MACD_12_26_9"]
-    df["macd_signal"] = macd["MACDs_12_26_9"]
-    df["macd_hist"] = macd["MACDh_12_26_9"]
-
-    df["roc_10"] = ta.roc(close, length=10)
-    df["mom_10"] = ta.mom(close, length=10)
-    df["rsi_14"] = ta.rsi(close, length=14)
-    df["adx_14"] = ta.adx(high, low, close, length=14)["ADX_14"]
-
-    # Breakout 简单标记：收盘价创新 N 日新高/新低
-    lookback = 20
-    df["n_high"] = close.rolling(lookback).max()
-    df["n_low"] = close.rolling(lookback).min()
-    df["breakout_up"] = (close >= df["n_high"]).astype(int)
-    df["breakout_down"] = (close <= df["n_low"]).astype(int)
-
-    # ===== 2. 均值回归因子 =====
-    bbands = ta.bbands(close, length=20, std=2.0)
-
-    df["bb_mid"] = bbands["BBM_20_2.0_2.0"]
-    df["bb_upper"] = bbands["BBU_20_2.0_2.0"]
-    df["bb_lower"] = bbands["BBL_20_2.0_2.0"]
-    df["bb_width"] = bbands["BBB_20_2.0_2.0"]   # 带宽，可用于波动率指标
-    df["bb_percent"] = bbands["BBP_20_2.0_2.0"] # 价格在布林带中的百分位
-
-    # Keltner Channel
-    kelt = ta.kc(high, low, close, length=20)
-    df["kc_mid"] = kelt["KCBe_20_2"]
-    df["kc_upper"] = kelt["KCUe_20_2"]
-    df["kc_lower"] = kelt["KCLe_20_2"]
-
-    # VWAP（通常用在 intraday，这里直接算一版）
-    df["vwap"] = ta.vwap(high, low, close, vol)
-
-    # ---- AVWAP：从整段数据起点锚定的成交量加权成本线 ----
-    cum_pv = (close * vol).cumsum()
-    cum_vol = vol.cumsum()
-    df["avwap_full"] = cum_pv / cum_vol   # 越靠后越稳定，可看作“大资金平均成本”
-
-    # Z-Score（价格相对滚动均值的偏离）
-    mean_20 = close.rolling(20).mean()
-    std_20 = close.rolling(20).std()
-    df["zscore_20"] = (close - mean_20) / std_20
-
-    # Williams %R
-    df["williams_r"] = ta.willr(high, low, close, length=14)
-
-    # ===== 3. 波动率因子 =====
-    # atr_mean = df["atr_14"].rolling(20).mean().iloc[-1]
-    # atr_now = df["atr_14"].iloc[-1]
-    #
-    # if atr_now > atr_mean:
-    #     print("ATR 高于平均 → 当前波动偏强")
-    # else:
-    #     print("ATR 低于平均 → 当前波动偏弱")
-    #
-
-    df["atr_14"] = ta.atr(high, low, close, length=14)
-    # NATR = ATR / close
-    #
-    # natr = df["atr_14"] / df["close"]  # 标准化后波动率更真实
-    # natr_now = natr.iloc[-1]
-    # natr_ma = natr.rolling(100).mean().iloc[-1]
-    #
-    # if natr_now < natr_ma * 0.6:
-    #     print("波动率明显压缩（squeeze），可能要爆发趋势")
-
-    df["natr_14"] = df["atr_14"] / close
-
-    # Historical Vol（简单用 log_return 的 std）
-    log_ret = (close / close.shift(1)).apply(lambda x: math.log(x) if x > 0 else 0)
-    df["hv_20"] = log_ret.rolling(20).std()
-
-    # HV Ratio：当前 HV vs 长周期 HV
-    df["hv_100"] = log_ret.rolling(100).std()
-    df["hv_ratio"] = df["hv_20"] / df["hv_100"]
-
-    # Skew / Kurtosis（滚动）
-    df["ret_skew_50"] = log_ret.rolling(50).skew()
-    df["ret_kurt_50"] = log_ret.rolling(50).kurt()
-
-    # ===== 4. 价量结构因子 =====
-    # Volume Spike：相对过去 N 根的倍数
-    vol_ma_20 = vol.rolling(20).mean()
-    df["vol_spike_ratio"] = vol / vol_ma_20
-
-    # OBV
-    df["obv"] = ta.obv(close, vol)
-
-    # HH/HL 结构简单判断：当前高点是否超过前 N 高点
-    swing_lookback = 5
-    df["swing_high"] = high[(high.shift(1) < high) & (high.shift(-1) < high)]
-    df["swing_low"] = low[(low.shift(1) > low) & (low.shift(-1) > low)]
-
-    # Breakout + Volume：同时突破 + 放量
-    df["breakout_up_with_vol"] = (
-        (df["breakout_up"] == 1) & (df["vol_spike_ratio"] > 2.0)
-    ).astype(int)
-
-    # ---- Volume Profile + POC（简单整段版）----
-    # 1) 选择价格范围
-    price_min = close.min()
-    price_max = close.max()
-    if price_max > price_min:
-        bins = 30  # 划分 30 档价格区间，你可以按需要改
-        bin_size = (price_max - price_min) / bins
-
-        # 每一根K线属于哪个价格档
-        bin_index = ((close - price_min) / bin_size).astype(int).clip(0, bins - 1)
-
-        # 2) 统计每个价格档的累计成交量
-        vol_profile = vol.groupby(bin_index).sum()
-
-        # 3) 找出成交量最多的那个档位 = POC
-        poc_bin = vol_profile.idxmax()
-        poc_price = float(price_min + (poc_bin + 0.5) * bin_size)  # 档位中点价格
-
-        df["poc_full"] = poc_price
-        df["price_to_poc_pct"] = (close - poc_price) / poc_price
-    else:
-        # 价格完全没波动（极端情况），直接置空
-        df["poc_full"] = float("nan")
-        df["price_to_poc_pct"] = float("nan")
-
     return df
 
 

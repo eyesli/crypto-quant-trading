@@ -7,7 +7,7 @@ from typing import Dict
 from hyperliquid.exchange import Exchange
 
 from src.account import fetch_account_overview
-from src.market_data import ohlcv_to_df, add_regime_indicators, classify_trend_range, classify_timing_state, \
+from src.market_data import ohlcv_to_df, compute_technical_factors, classify_trend_range, classify_timing_state, \
     fetch_order_book_info, build_perp_asset_map
 from src.models import RegimeState, Action, PerpAssetInfo, Decision
 from src.strategy import classify_vol_state, decide_regime, build_signal
@@ -43,9 +43,9 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     ))
     #
     # --- 2) 同一套指标，分别计算（正确） ---
-    indicators_1h = add_regime_indicators(df_1h)
-    indicators_15m = add_regime_indicators(df_15m)
-    indicators_5m = add_regime_indicators(df_5m)
+    indicators_1h = compute_technical_factors(df_1h)
+    indicators_15m = compute_technical_factors(df_15m)
+    indicators_5m = compute_technical_factors(df_5m)
 
     # --- 3) 1h：环境/方向/权限 ---
     base, adx = classify_trend_range(df=indicators_1h, prev=state.prev_base)
@@ -82,13 +82,13 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
     # print(plan.score)
     # execute_trade_plan(exchange, plan, cfg=exec_cfg)
-# def save_regime_state(state: RegimeState, path="regime_state.json"):
+# def save_regime_state(state: RegimeState, path=".json"):
 #     with open(path, "w") as f:
 #         f.write(state.model_dump_json())
 #
 # def load_regime_state() -> RegimeState:
 #     try:
-#         with open("regime_state.json", "r") as f:
+#         with open(".json", "r") as f:
 #             return RegimeState.model_validate_json(f.read())
 #     except FileNotFoundError:
 #         raise
