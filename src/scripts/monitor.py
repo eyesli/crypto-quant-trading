@@ -209,6 +209,7 @@ def print_summary(summary: dict):
 
 
 def main():
+
     print(f"🚀 开始监控，按 Ctrl+C 退出...")
     prev_summary = None
 
@@ -236,4 +237,6 @@ def main():
 
 
 if __name__ == "__main__":
+
+
     main()

@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import functools
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from src.tools.performance import measure_time
 
@@ -95,3 +95,8 @@ def estimate_qty_from_notional(notional: float, price: float) -> float:
         return 0.0
     return notional / price
 
+def _to_float(x) -> Optional[float]:
+    try:
+        return float(x) if x is not None else None
+    except Exception:
+        return None

@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Literal, Optional, List, Dict, TYPE_CHECKING
+from typing import Any, Literal, Dict, TYPE_CHECKING, Tuple
 from pydantic import BaseModel
+
+from src.tools.utils import _to_float
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -460,19 +462,6 @@ class TradePlan:
 
 
 
-# ===== 基础工具：尽量宽容地转 float =====
-def _to_float(x: Any) -> Optional[float]:
-    if x is None:
-        return None
-    try:
-        if isinstance(x, (int, float)):
-            return float(x)
-        s = str(x).strip()
-        if s == "":
-            return None
-        return float(s)
-    except Exception:
-        return None
 
 
 @dataclass(frozen=True)
@@ -512,7 +501,9 @@ class LeverageInfo:
 
 @dataclass(frozen=True)
 class PerpPosition:
+
     coin: str
+    orders: Optional[PositionOrders]
 
     # funding
     cum_funding: CumFunding
@@ -568,7 +559,7 @@ class PerpPosition:
         return PerpPosition(
             coin=coin,
             cum_funding=CumFunding.from_dict(d.get("cumFunding")),
-            entry_px=_to_float(d.get("entryPx") or d.get("entryPrice")),
+            entry_px=_to_float(d.get("entryPx")),
             liquidation_px=_to_float(d.get("liquidationPx") or d.get("liquidationPrice")),
             margin_used=_to_float(d.get("marginUsed")),
             max_leverage=_to_float(d.get("maxLeverage")),
@@ -618,3 +609,40 @@ class AccountOverview:
     primary_position: Optional[PerpPosition]
     open_orders: List[Dict[str, Any]]   # 这里先保留 dict（因为订单结构更复杂/变化更多）
     raw_user_state: Dict[str, Any]
+
+@dataclass(frozen=True)
+class TriggerOrder:
+    coin: str
+    side: Optional[str]                 # 原始 side: 'B'/'A' or 'buy'/'sell'
+    size: float
+    limit_px: Optional[float]
+    trigger_px: Optional[float]
+    trigger_condition: Optional[str]
+    is_position_tpsl: bool
+    timestamp: Optional[int]
+    raw: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NormalOrder:
+    coin: str
+    side: Optional[str]
+    size: float
+    limit_px: Optional[float]
+    timestamp: Optional[int]
+    raw: Dict[str, Any]
+
+@dataclass(frozen=True)
+class PositionTpsl:
+    """内嵌到仓位对象里：按 entryPx + 方向归类后的 TP/SL"""
+    tp: Tuple[TriggerOrder, ...]
+    sl: Tuple[TriggerOrder, ...]
+    others: Tuple[TriggerOrder, ...]   # 同 coin 的触发单，但无法判定 TP/SL（缺价/缺entry等）
+
+
+@dataclass(frozen=True)
+class PositionOrders:
+    """你也可以不要 normal，只放 tpsl；我这里给全一点便于调试"""
+    tpsl: PositionTpsl
+    normal: Tuple[NormalOrder, ...]
+    raw_trigger: Tuple[TriggerOrder, ...]  # 未归类前同 coin 的全部 trigger 单（方便排查）

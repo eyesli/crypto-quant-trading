@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
+from src.data.models import SignalSnapshot
 
 import pandas as pd
 
@@ -294,7 +295,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
         # 7.2 突破低波动过滤（死鱼盘不追突破）
         if is_breakout:
             if (atr / close) < min_breakout_natr:
-                return TriggerResult(False, None, 0.0, reasons + ["strict: volatility too low for breakout -> reject"])
+                return TriggerResult(False, None, 0.0, False,reasons + ["strict: volatility too low for breakout -> reject"])
 
     return TriggerResult(entry_ok, entry_hint, strength, is_breakout,reasons)
 
@@ -306,7 +307,7 @@ def compute_validity_and_risk(
     trg_res: TriggerResult,
     regime: Decision,
     asset_info: PerpAssetInfo,
-    position: "PerpPosition"
+    position: Optional["PerpPosition"] = None
 ) -> ValidityResult:
     """
     实盘级 Validity & Risk（风险有效性层）
@@ -335,7 +336,7 @@ def compute_validity_and_risk(
         return ValidityResult(None, False, False, 0.0, ["15m: ATR invalid (<=0)"])
 
     # 是否有仓位（持仓管理路径）
-    has_pos = bool(position is None)
+    has_pos = bool(position is not None)
 
     # ----------------------------------------------------------------------
     # A) FLAT：没有仓位
@@ -357,8 +358,13 @@ def compute_validity_and_risk(
         atr_dist = k_atr * atr15
 
         # 判断是否为突破类型
-
-        is_breakout = trg_res.is_breakout
+        is_breakout = False
+        if trg_res.is_breakout is not None:
+            is_breakout = trg_res.is_breakout
+        else:
+            # 从 reasons 判断
+            rs = " ".join(trg_res.reasons).lower()
+            is_breakout = ("breakout" in rs) or ("breakdown" in rs)
 
         # swing（近 10 根）
         N = 10
@@ -421,7 +427,7 @@ def compute_validity_and_risk(
     # B) IN-POSITION：有仓位（持仓管理）
     # ----------------------------------------------------------------------
     pos_side = position.side_enum
-    entry_px = float(position.entry_price)
+    entry_px = float(position.entry_px)
 
     # --- 1) 追踪止损（Trailing Stop）：用 15m ATR/EMA 做一个稳健版本 ---
     k_trail = 1.10 if strict else 1.35
@@ -565,11 +571,10 @@ def build_signal(
     df_5m: pd.DataFrame,
     regime: Decision,
     asset_info: PerpAssetInfo,
-    position: "PerpPosition",
+    position: Optional["PerpPosition"],
     now_ts: float
 ) -> SignalSnapshot:
     """构建完整的交易信号"""
-    from src.data.models import SignalSnapshot
 
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)

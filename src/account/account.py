@@ -2,34 +2,14 @@ from typing import Any, Dict, List, Optional, Iterable
 
 from hyperliquid.info import Info
 
+from src.account.manager import _to_float, parse_orders, embed_orders_into_positions
 from src.data.models import AccountOverview, AccountState, MarginSummary, PerpPosition
 from src.tools.performance import measure_time
 
 
 
 
-def _to_float(x) -> Optional[float]:
-    try:
-        return float(x) if x is not None else None
-    except Exception:
-        return None
 
-def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
-    # 兼容不同字段命名
-    for k in ("triggerPx", "triggerPrice", "stopPx", "stopPrice"):
-        v = order.get(k)
-        if v is not None:
-            return _to_float(v)
-
-    # 有的返回会把触发信息放在 trigger / orderType 里
-    trig = order.get("trigger") or order.get("orderType") or {}
-    if isinstance(trig, dict):
-        for k in ("triggerPx", "triggerPrice", "stopPx", "stopPrice"):
-            v = trig.get(k)
-            if v is not None:
-                return _to_float(v)
-
-    return None
 '''
 {
   // =========================
@@ -160,7 +140,8 @@ def fetch_account_overview(info: Info, address: str,primary_symbol: Optional[str
     - open_orders（暂保留 dict）
     """
     print("\n💼 正在获取账户状态...")
-    us: Dict[str, Any] = info.user_state(address) or {}
+
+    us = info.user_state(address)
 
     # --- summary ---
     cross_margin_summary = MarginSummary.from_dict(us.get("crossMarginSummary"))
@@ -187,13 +168,25 @@ def fetch_account_overview(info: Info, address: str,primary_symbol: Optional[str
         positions.append(pos)
 
         if primary_symbol is not None and coin == primary_symbol:
-            primary_position = pos
+           primary_position = pos
 
     # --- orders ---
-    print("📌 正在获取挂单(open_orders)...")
     frontend_open_orders = info.frontend_open_orders(address) or []
     if not isinstance(frontend_open_orders, list):
         frontend_open_orders = []
+
+    # ✅ 强类型拆分
+    normal_orders, trigger_orders = parse_orders(frontend_open_orders)
+
+    # ✅ 内嵌到仓位对象里
+    positions = embed_orders_into_positions(positions, normal_orders, trigger_orders)
+
+    # ✅ primary_position 如果需要也要从 enriched 里重新拿（否则它是老对象）
+    if primary_symbol is not None:
+        for p in positions:
+            if p.coin == primary_symbol:
+                primary_position = p
+                break
 
     # ---（可选）保持你原来的打印行为，但不要影响返回强类型 ---
     print("💰 账户余额概览")
