@@ -178,17 +178,10 @@ def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     asset_positions = us.get("assetPositions") or []
     positions: List[PerpPosition] = []
     for ap in asset_positions:
-        # 兼容：ap 可能是 {type, position:{...}} 或直接就是 position dict
-        pos_dict = ap.get("position") if isinstance(ap, dict) else None
-        pos_dict = pos_dict if isinstance(pos_dict, dict) else (ap if isinstance(ap, dict) else None)
-        if not isinstance(pos_dict, dict):
-            continue
-
-        # coin 必须有，否则跳过
-        coin = pos_dict.get("coin") or pos_dict.get("symbol") or pos_dict.get("asset")
+        pos_dict = ap.get("position")
+        coin = pos_dict.get("coin")
         if not coin:
             continue
-
         positions.append(PerpPosition.from_dict(pos_dict))
 
     # --- orders ---

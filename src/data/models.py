@@ -304,6 +304,11 @@ class Decision:
     # True：允许调整现有持仓（如移动止损、减仓）。
     # False：冻结现有持仓操作（极少使用，可能用于系统维护模式）。
 
+    allow_flip: bool = False
+    # 是否允许反手操作。
+    # True：允许在满足条件时反手（平仓并反向开仓）。
+    # False：禁止反手操作。
+
     # ==========================================
     # 5. 动态风控参数 (Dynamic Risk)
     # ==========================================
@@ -409,6 +414,7 @@ class TriggerResult:
     entry_ok: bool
     entry_price_hint: Optional[float]
     strength: float               # 0~1
+    is_breakout: bool
     reasons: List[str]
 
 @dataclass
@@ -553,7 +559,7 @@ class PerpPosition:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "PerpPosition":
-        coin = d.get("coin") or d.get("symbol") or d.get("asset") or ""
+        coin = d.get("coin")
         coin = str(coin)
 
         return PerpPosition(

@@ -148,7 +148,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
             reasons.append(f"1h: ADX weak (-) {adx:.1f}")
 
     # ---- 3) Regime gate (只降权，不封杀) ----
-    if side != Side.NONE and getattr(regime, "allow_trend", True) is False:
+    if side != Side.NONE and not regime.allow_trend:
         conf *= 0.60
         reasons.append("regime: trend not allowed -> confidence *0.60")
 
@@ -295,7 +295,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
             if (atr / close) < min_breakout_natr:
                 return TriggerResult(False, None, 0.0, reasons + ["strict: volatility too low for breakout -> reject"])
 
-    return TriggerResult(entry_ok, entry_hint, strength, reasons)
+    return TriggerResult(entry_ok, entry_hint, strength, is_breakout,reasons)
 
 
 def compute_validity_and_risk(
@@ -319,7 +319,7 @@ def compute_validity_and_risk(
     if df_15m is None or len(df_15m) < 30:
         return ValidityResult(None, False, False, 0.0, ["15m: insufficient bars"])
 
-    strict = bool(getattr(regime, "strict_entry", False))
+    strict = regime.strict_entry
 
     # 最近一根
     close15 = float(df_15m["close"].iloc[-1])
@@ -356,12 +356,8 @@ def compute_validity_and_risk(
         atr_dist = k_atr * atr15
 
         # 判断是否为突破类型
-        is_breakout = False
-        if hasattr(trg_res, "is_breakout"):
-            is_breakout = bool(trg_res.is_breakout)
-        else:
-            rs = " ".join(getattr(trg_res, "reasons", [])).lower()
-            is_breakout = ("breakout" in rs) or ("breakdown" in rs)
+
+        is_breakout = trg_res.is_breakout
 
         # swing（近 10 根）
         N = 10
@@ -373,7 +369,7 @@ def compute_validity_and_risk(
             atr_sl = entry_ref - atr_dist
 
             if is_breakout:
-                breakout_level = float(getattr(trg_res, "entry_price_hint", entry_ref))
+                breakout_level = float(trg_res.entry_price_hint or entry_ref)
                 struct_sl = max(breakout_level - 0.25 * atr15, ema20_15 - 0.25 * atr15)
                 reasons.append("stop: breakout long -> invalidation below breakout/ema20")
             else:
@@ -387,7 +383,7 @@ def compute_validity_and_risk(
             atr_sl = entry_ref + atr_dist
 
             if is_breakout:
-                breakout_level = float(getattr(trg_res, "entry_price_hint", entry_ref))
+                breakout_level = float(trg_res.entry_price_hint or entry_ref)
                 struct_sl = min(breakout_level + 0.25 * atr15, ema20_15 + 0.25 * atr15)
                 reasons.append("stop: breakout short -> invalidation above breakout/ema20")
             else:
@@ -493,7 +489,7 @@ def compute_validity_and_risk(
 
     # --- 3) flip_ok：严格条件（默认只在 strict 或极强证据下允许） ---
     flip_ok = False
-    allow_flip = bool(getattr(regime, "allow_flip", False))
+    allow_flip = regime.allow_flip
     if strict or allow_flip:
         # 简化：用 15m 的结构 + close-confirmed 反向突破当作 flip 触发
         win_len = min(20, len(df_15m) - 1)
@@ -551,11 +547,11 @@ def score_signal(dir_res: DirectionResult, trg_res: TriggerResult, val_res: Vali
     reasons += val_res.reasons
 
     # regime 惩罚
-    if getattr(regime, "allow_trend", True) is False:
+    if not regime.allow_trend:
         score *= 0.70
         reasons.append("penalty: trend not allowed")
 
-    if getattr(regime, "strict_entry", False):
+    if regime.strict_entry:
         reasons.append("strict_entry enabled")
 
     return score, reasons
@@ -578,7 +574,7 @@ def build_signal(
     val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info)
 
     score, reasons = score_signal(dir_res, trg_res, val_res, regime)
-    entry_threshold = 80.0 if getattr(regime, "strict_entry", False) else 70.0
+    entry_threshold = 80.0 if regime.strict_entry else 70.0
 
     entry_ok = trg_res.entry_ok and (score >= entry_threshold) and (dir_res.side != Side.NONE)
 
@@ -592,6 +588,6 @@ def build_signal(
         stop_price=val_res.stop_price,
         score=score,
         reasons=reasons,
-        ttl_seconds=(45 if getattr(regime, "strict_entry", False) else 120),
+        ttl_seconds=(45 if regime.strict_entry else 120),
         created_ts=now_ts
     )

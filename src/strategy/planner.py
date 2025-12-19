@@ -6,8 +6,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-
-from src.account.manager import account_total_usdc, find_position, position_to_state
+from src.account.manager import find_position, position_to_state
 from src.data.models import Decision, PerpAssetInfo, Side, SignalSnapshot, TradePlan, AccountOverview
 from src.tools.utils import estimate_qty_from_notional, max_notional_by_equity, round_qty_by_decimals
 

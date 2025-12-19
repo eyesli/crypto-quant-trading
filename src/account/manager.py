@@ -11,21 +11,37 @@ from src.data.models import PositionState, Side, AccountOverview
 
 def account_total_usdc(account: AccountOverview) -> float:
     """获取账户总权益（USDC）"""
-    us = getattr(account, "raw_user_state", {}) or {}
+    # 优先使用强类型的 state.margin_summary.account_value
+    if account.state is not None:
+        if account.state.margin_summary and account.state.margin_summary.account_value is not None:
+            return float(account.state.margin_summary.account_value)
+    
+    # 兜底：使用 raw_user_state
+    us = account.raw_user_state or {}
     margin = us.get("marginSummary") or {}
     v = margin.get("accountValue")
     try:
-        return float(v)
+        return float(v) if v is not None else 0.0
     except Exception:
         return 0.0
 
 
 def find_position(account: AccountOverview, symbol: str) -> Optional[Dict[str, Any]]:
     """查找指定 symbol 的仓位"""
-    for p in (getattr(account, "positions", []) or []):
-        coin = p.get("coin") or p.get("symbol") or p.get("asset")
-        if coin == symbol:
-            return p
+    from src.data.models import PerpPosition
+    
+    positions = account.positions or []
+    for p in positions:
+        # 兼容两种格式：PerpPosition 对象或 dict
+        if isinstance(p, PerpPosition):
+            coin = p.coin
+            if coin == symbol:
+                return p.raw
+        else:
+            # dict 格式
+            coin = p.get("coin") or p.get("symbol") or p.get("asset")
+            if coin == symbol:
+                return p
     return None
 
 
