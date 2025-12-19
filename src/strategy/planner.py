@@ -45,9 +45,9 @@ def signal_to_trade_plan(
                          ["signal.side = NONE"])
 
     # 1) 仓位冲突：默认不加仓、不反手（你以后再加）
-    pos_raw = find_position(account, symbol)
-    if pos_raw:
-        if  pos_raw.side_enum == signal.side:
+    pos_raw = account.primary_position
+    if pos_raw is not None and pos_raw.coin == symbol and pos_raw.szi is not None and abs(pos_raw.szi) > 0:
+        if pos_raw.side_enum == signal.side:
             return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
                              ["existing same-side position -> skip"])
 
