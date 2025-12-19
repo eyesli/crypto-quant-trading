@@ -342,7 +342,7 @@ def compute_validity_and_risk(
 
         # is_breakout：优先字段，否则从 reasons 推断
         if trg_res.is_breakout is not None:
-            is_breakout = bool(trg_res.is_breakout)
+            is_breakout = trg_res.is_breakout
         else:
             rs = " ".join(getattr(trg_res, "reasons", [])).lower()
             is_breakout = ("breakout" in rs) or ("breakdown" in rs)
@@ -424,7 +424,7 @@ def compute_validity_and_risk(
         if close15 >= stop_price: exit_ok = True
 
     flip_ok = False
-    allow_flip = bool(getattr(regime, "allow_flip", False))
+    allow_flip = regime.allow_flip
     if strict or allow_flip:
         win_len = min(20, len(df_15m) - 1)
         window = df_15m.iloc[-(win_len + 1):-1]
