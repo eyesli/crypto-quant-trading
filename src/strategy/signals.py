@@ -341,7 +341,7 @@ def compute_validity_and_risk(
         atr_dist = k_atr * atr15
 
         # is_breakout：优先字段，否则从 reasons 推断
-        if getattr(trg_res, "is_breakout", None) is not None:
+        if trg_res.is_breakout is not None:
             is_breakout = bool(trg_res.is_breakout)
         else:
             rs = " ".join(getattr(trg_res, "reasons", [])).lower()
@@ -390,7 +390,7 @@ def compute_validity_and_risk(
     # ----------------------------------------------------------------------
     assert position is not None
     pos_side = position.side_enum
-    entry_px = float(position.entry_px or 0.0)
+    # entry_px = float(position.entry_px or 0.0)
 
     k_trail = 1.10 if strict else 1.35
     trail_dist = k_trail * atr15
