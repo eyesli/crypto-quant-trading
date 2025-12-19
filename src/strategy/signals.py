@@ -186,7 +186,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
     if len(df_15m) < 3:
         return TriggerResult(False, None, 0.0, ["15m: insufficient bars (<3)"])
 
-    strict = bool(getattr(regime, "strict_entry", False))
+    strict_entry = regime.strict_entry
 
     # -------- 2) Latest bar data --------
     open_ = float(df_15m["open"].iloc[-1])
@@ -205,8 +205,8 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
 
     # -------- 3) Tunables (建议后续放 config) --------
     N = 20
-    breakout_pad = (0.20 * atr) if strict else (0.05 * atr)
-    pullback_band = (0.25 * atr) if strict else (0.35 * atr)
+    breakout_pad = (0.20 * atr) if strict_entry else (0.05 * atr)
+    pullback_band = (0.25 * atr) if strict_entry else (0.35 * atr)
 
     ema_tangle_gap = 0.20 * atr          # strict 下：ema20/ema50 太近认为纠缠
     min_breakout_natr = 0.005            # strict 下：低波动不追突破（0.5%）
@@ -229,13 +229,13 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
         # reclaim: 本K曾触及/刺破EMA20，但收盘收回到EMA20之上
         reclaim = (low <= ema20) and (close >= ema20)
         # 动作确认：非 strict 要 (reclaim OR green)，strict 要 (reclaim AND green)
-        action_ok = (reclaim and is_green) if strict else (reclaim or is_green)
+        action_ok = (reclaim and is_green) if strict_entry else (reclaim or is_green)
 
         # 位置 + 动作 + 收盘不在ema20下方（避免阴跌）
         if near_ema20 and close >= ema20 and action_ok:
             entry_ok = True
             entry_hint = close
-            strength = 0.62 if strict else 0.58
+            strength = 0.62 if strict_entry else 0.58
             reasons.append("15m: pullback confirmed long")
             if near_ema20: reasons.append("15m: near ema20")
             if reclaim:    reasons.append("15m: reclaim (low<=ema20 & close>=ema20)")
@@ -243,12 +243,12 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
 
     elif dir_res.side == Side.SHORT and in_bear_struct:
         reject = (high >= ema20) and (close <= ema20)
-        action_ok = (reject and is_red) if strict else (reject or is_red)
+        action_ok = (reject and is_red) if strict_entry else (reject or is_red)
 
         if near_ema20 and close <= ema20 and action_ok:
             entry_ok = True
             entry_hint = close
-            strength = 0.62 if strict else 0.58
+            strength = 0.62 if strict_entry else 0.58
             reasons.append("15m: pullback confirmed short")
             if near_ema20: reasons.append("15m: near ema20")
             if reject:     reasons.append("15m: reject (high>=ema20 & close<=ema20)")
@@ -272,7 +272,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
                 entry_ok = True
                 is_breakout = True
                 entry_hint = up_level
-                strength = 0.65 if strict else 0.60
+                strength = 0.65 if strict_entry else 0.60
                 reasons.append(f"15m: breakout close-confirmed above {win_len}-bar HH + pad (long)")
 
         elif dir_res.side == Side.SHORT and in_bear_struct:
@@ -280,11 +280,11 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
                 entry_ok = True
                 is_breakout = True
                 entry_hint = dn_level
-                strength = 0.65 if strict else 0.60
+                strength = 0.65 if strict_entry else 0.60
                 reasons.append(f"15m: breakdown close-confirmed below {win_len}-bar LL - pad (short)")
 
     # -------- 7) strict filters --------
-    if entry_ok and strict:
+    if entry_ok and strict_entry:
         # 7.1 EMA 纠缠过滤（震荡不做）
         ema_gap = abs(ema20 - ema50)
         if ema_gap < ema_tangle_gap:
@@ -341,15 +341,15 @@ def compute_validity_and_risk(
     # ----------------------------------------------------------------------
     if not has_pos:
         # 没触发入场就不算"开仓止损/质量"（省算力，也避免 reasons 污染）
-        if not getattr(trg_res, "entry_ok", False):
+        if not trg_res.entry_ok:
             return ValidityResult(None, False, False, 0.0, ["flat: no entry -> skip validity"])
 
         # 没方向也不做
-        if getattr(dir_res, "side", None) is None or dir_res.side == Side.NONE:
+        if dir_res.side is None or dir_res.side == Side.NONE:
             return ValidityResult(None, False, False, 0.0, ["flat: no direction"])
 
         # entry_ref：用触发给的入场参考价（突破/限价）更准确
-        entry_ref = float(getattr(trg_res, "entry_price_hint", None) or close15)
+        entry_ref = float(trg_res.entry_price_hint or close15)
 
         # --- 1) 初始止损：ATR + 结构（按触发类型分开） ---
         k_atr = 1.25 if strict else 1.55

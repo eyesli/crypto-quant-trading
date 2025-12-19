@@ -35,9 +35,12 @@ def signal_to_trade_plan(
         return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
                          ["signal.entry_ok = False"])
 
-    if not getattr(regime, "allow_new_entry", True):
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["regime disallows new entry"])
+    if not regime.allow_new_entry:
+        return TradePlan(
+            "NONE", symbol, None, 0.0, "MARKET",
+            None, None, None, False, post_only,
+            ["regime disallows new entry"]
+        )
 
     if signal.side == Side.NONE:
         return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
@@ -52,8 +55,8 @@ def signal_to_trade_plan(
                              ["existing same-side position -> skip"])
 
     # 2) 风险预算
-    equity = account_total_usdc(account)
-    risk_budget = equity * float(risk_pct) * float(getattr(regime, "risk_scale", 1.0) or 1.0)
+    account_value = account.state.margin_summary.account_value
+    risk_budget = account_value * risk_pct * regime.risk_scale
 
     entry_ref = signal.entry_price_hint
     stop = signal.stop_price
@@ -70,7 +73,7 @@ def signal_to_trade_plan(
     raw_qty = risk_budget / R
 
     # 4) 再加一个"名义上限"兜底（防止风控参数异常）
-    max_notional = max_notional_by_equity(equity, leverage)
+    max_notional = max_notional_by_equity(account_value, leverage)
     max_qty_by_notional = estimate_qty_from_notional(max_notional, entry_ref)
     qty = min(raw_qty, max_qty_by_notional)
 
