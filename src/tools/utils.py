@@ -11,7 +11,7 @@ import functools
 import time
 from typing import Any, Iterable
 
-from src.tools.system_config import measure_time
+from src.tools.performance import measure_time
 
 # Timeframe -> milliseconds mapping
 TIMEFRAME_MS: dict[str, int] = {

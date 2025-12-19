@@ -1,302 +1,24 @@
 """
-策略模块
-
-目标：真正做到
-  K线 + 技术指标 -> 信号 -> 交易计划（TradePlan）-> 交给执行器下单
+信号生成模块
+负责生成交易信号（方向、触发、有效性、评分）
 """
-
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, Literal
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from src.config import TIMEFRAME_SETTINGS
-from src.market_data import AccountOverview
-from src.models import (
-    BreakoutSignal,
-    MomentumSignal,
-    OverheatSignal,
-    PositionSide,
-    StructureCostSignal,
-    TechnicalLinesSnapshot,
-    TrendLineSignal,
-    VolatilitySignal,
-    VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState, TimingState, Slope,
-    PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot, PositionState, TradePlan,
-)
-from src.tools.system_config import measure_time
-from src.tools.utils import max_notional_by_equity, estimate_qty_from_notional, round_qty_by_decimals
-from src.trading import account_total_usdc, position_to_state, find_position
+from src.data.models import Decision, DirectionResult, PerpAssetInfo, PositionState, Side, SignalSnapshot, TriggerResult, ValidityResult
+from src.tools.performance import measure_time
 
 
-def _q_state(cur: float, p20: float, p80: float) -> VolState:
-    if cur <= p20:
-        return VolState.LOW
-    if cur >= p80:
-        return VolState.HIGH
-    return VolState.NORMAL
-
-
-def classify_vol_state(df: pd.DataFrame) -> Tuple[VolState, Dict]:
-    """
-    波动状态（Regime 子模块）：
-    - 用 NATR + BB Width 两个“独立波动视角”做一致性判定
-    - 输出 low/normal/high，用于策略许可与风险缩放
-    todo 有没有必要分细一点
-    """
-    if df is None or "natr_14" not in df.columns or "bb_width" not in df.columns:
-        return VolState.UNKNOWN, {}
-
-    natr = df["natr_14"].dropna()
-    bbw = df["bb_width"].dropna()
-    if len(natr) < 200 or len(bbw) < 200:
-        return VolState.UNKNOWN, {}
-
-    # 统一取近端窗口（大约一周+）
-    # 现在的波动，是处在自己历史里的“偏低 / 正常 / 偏高”哪个档位
-    w_natr = natr.iloc[-200:]
-    w_bbw = bbw.iloc[-200:]
-
-    # 价格实际振幅
-    # 在最近 200 根里，找出“最安静的 20% 波动水平”
-    n_cur = float(w_natr.iloc[-1])
-    n_p20 = float(w_natr.quantile(0.2))
-    # 在最近 200 根里，找出“最吵的 20% 波动水平”
-    n_p80 = float(w_natr.quantile(0.8))
-    n_state = _q_state(n_cur, n_p20, n_p80)
-
-    # 价格分布是不是已经被撑开
-    b_cur = float(w_bbw.iloc[-1])
-    # 布林带“非常收紧”的历史水平
-    b_p20 = float(w_bbw.quantile(0.2))
-    # 布林带“明显张开”的历史水平
-    b_p80 = float(w_bbw.quantile(0.8))
-    # 判断当前布林结构是低 / 中 / 高波动
-    b_state = _q_state(b_cur, b_p20, b_p80)
-
-    # 一致性判定：两者一致 → 置信度高
-    if n_state == b_state:
-        final = n_state
-        conf = "high"
-    else:
-        # 冲突时：保守策略 —— 视为 normal/mixed（不要极端化）
-        final = VolState.NORMAL
-        conf = "low"
-
-    dbg = {
-        "final": final,
-        "confidence": conf,
-        "natr": {"cur": n_cur, "p20": n_p20, "p80": n_p80, "state": n_state},
-        "bbw": {"cur": b_cur, "p20": b_p20, "p80": b_p80, "state": b_state},
-    }
-    return final, dbg
-
-
-from typing import Optional, List
-
-
-@measure_time
-def decide_regime(
-        base: "MarketRegime",
-        adx: Optional[float],
-        vol_state: "VolState",
-        order_book: Optional["OrderBookInfo"],
-        timing: Optional["TimingState"],
-        max_spread_bps: float,
-        # 新增可选参数，默认值保持原样，方便针对不同币种调整
-        min_depth: float = 200_000,
-        imbalance_limit: float = 0.8
-) -> "Decision":
-    """
-        HIGH vol：禁 mean
-        LOW vol：不禁 mean，只 strict_entry
-        BBW 扩张：禁 mean
-        ADX slope 下行：趋势降权
-    """
-    timing = timing or TimingState()
-    adx_slope_state = timing.adx_slope.state
-    bbw_slope_state = timing.bbw_slope.state
-
-    if order_book is None:
-        spread_bps = None
-        bid_depth = 0.0
-        ask_depth = 0.0
-        imbalance = None
-    else:
-        spread_bps = order_book.spread_bps
-        bid_depth = order_book.bid_depth_value or 0.0
-        ask_depth = order_book.ask_depth_value or 0.0
-        imbalance = order_book.imbalance
-    depth = bid_depth + ask_depth
-
-    # --- 1. 初始意图 ---
-    allow_trend = base in (MarketRegime.TREND, MarketRegime.MIXED)
-    allow_mean = base in (MarketRegime.RANGE, MarketRegime.MIXED)
-
-    hard_reasons: List[str] = []
-    soft_reasons: List[str] = []
-
-    # =========================================================
-    # Step 1) HARD STOP (熔断机制)
-    # =========================================================
-    if base == MarketRegime.UNKNOWN or vol_state == VolState.UNKNOWN:
-        hard_reasons.append("regime or vol_state unknown")
-
-    if spread_bps is not None and spread_bps > max_spread_bps:
-        hard_reasons.append(f"spread too wide ({spread_bps:.2f}bps)")
-
-    # 关键：ADX 缺失直接硬阻断
-    if adx is None:
-        hard_reasons.append("ADX missing")
-
-    if hard_reasons:
-        return Decision(
-            action=Action.NO_NEW_ENTRY,
-            regime=base,
-            allow_trend=False, allow_mean=False,
-            allow_new_entry=False, allow_manage=True,
-            risk_scale=0.0, cooldown_scale=2.0,
-            reasons=hard_reasons,
-            adx=adx, vol_state=vol_state, order_book=order_book
-        )
-
-    # =========================================================
-    # Step 2) Strategy Gates (策略逻辑裁剪)
-    # =========================================================
-    adx_val = float(adx)
-    strict_entry = False
-    gate_logs: List[str] = []
-
-    # --- 波动率逻辑 ---
-    if vol_state == VolState.HIGH:
-        # 修正点：只有当 allow_mean 原本为 True 时，才记录“被波动率关了”
-        if allow_mean:
-            allow_mean = False
-            gate_logs.append("gate: high vol disables mean")
-
-    elif vol_state == VolState.LOW:
-        if bbw_slope_state != Slope.UP:
-            strict_entry = True
-            gate_logs.append("gate: low vol -> strict entry (no expansion)")
-        else:
-            gate_logs.append("gate: low vol but bbw expanding -> ok")
-
-    # --- ADX 强度过滤 ---
-    if adx_val < 20:
-        if allow_trend:
-            allow_trend = False
-            gate_logs.append(f"gate: adx too weak ({adx_val:.1f}<20)")
-
-    # --- Timing 过滤 ---
-    if adx_slope_state == Slope.DOWN and allow_trend:
-        # A) 强趋势回调 (ADX > 25) -> 放行
-        if adx_val > 25:
-            pass
-        # B) 弱势下跌 -> 趋势结束
-        else:
-            allow_trend = False
-            gate_logs.append(f"gate: adx fading ({adx_val:.1f}) & slope down")
-
-    # 布林带开口保护
-    if bbw_slope_state == Slope.UP and base in (MarketRegime.RANGE, MarketRegime.MIXED):
-        if allow_mean:
-            allow_mean = False
-            gate_logs.append("gate: bbw expanding disables mean")
-
-    # =========================================================
-    # Step 3) SOFT STOP (环境过滤)
-    # =========================================================
-
-    if order_book is not None and 0 < depth < min_depth:
-        soft_reasons.append(f"order book thin (depth={depth:.0f})")
-
-    if imbalance is not None and abs(imbalance) > imbalance_limit:
-        soft_reasons.append(f"extreme imbalance ({imbalance:.2f})")
-
-    if vol_state == VolState.HIGH and base in (MarketRegime.RANGE, MarketRegime.MIXED):
-        soft_reasons.append("high vol + range: whipsaw risk")
-
-    if order_book is None:
-        soft_reasons.append("order book missing")
-
-    # =========================================================
-    # Step 4) Risk Calculation & Final Check
-    # =========================================================
-    # Step 4) Risk Calculation & Final Check
-    if vol_state == VolState.HIGH:
-        risk_scale, cooldown_scale = 0.6, 2.0
-    elif vol_state == VolState.LOW:
-        risk_scale, cooldown_scale = 0.8, 1.5
-    else:
-        risk_scale, cooldown_scale = 1.0, 1.0
-
-    # 2) 动态修正
-    # A) 趋势动能减弱 -> 降仓
-    if adx_slope_state == Slope.DOWN and allow_trend and adx_val > 25:
-        risk_scale *= 0.75
-
-    # B) 狙击模式 -> 试错仓
-    if vol_state == VolState.LOW and strict_entry:
-        risk_scale *= 0.7
-
-        # 软拒绝检查
-    if soft_reasons:
-        all_reasons = soft_reasons + gate_logs
-        return Decision(
-            action=Action.NO_NEW_ENTRY,
-            regime=base,
-            strict_entry=strict_entry,
-            allow_trend=allow_trend, allow_mean=allow_mean,
-            allow_new_entry=False, allow_manage=True,  # 允许管理旧仓位
-            risk_scale=risk_scale, cooldown_scale=cooldown_scale,
-            reasons=all_reasons,
-            adx=adx, vol_state=vol_state, order_book=order_book
-        )
-
-    # 僵尸状态检查 (Logic Filter 导致无策略可用)
-    if not allow_trend and not allow_mean:
-        failure_reasons = gate_logs if gate_logs else ["logic gap: no strategy fits"]
-        return Decision(
-            action=Action.NO_NEW_ENTRY,
-            strict_entry=False,
-            regime=base,
-            allow_trend=False, allow_mean=False,
-            allow_new_entry=False, allow_manage=True,
-            risk_scale=risk_scale, cooldown_scale=cooldown_scale,
-            reasons=failure_reasons,
-            adx=adx, vol_state=vol_state, order_book=order_book
-        )
-
-    # =========================================================
-    # Step 5) GREEN LIGHT
-    # =========================================================
-    return Decision(
-        action=Action.OK,
-        regime=base,
-        strict_entry=strict_entry,
-        allow_trend=allow_trend,
-        allow_mean=allow_mean,
-        allow_new_entry=True,
-        allow_manage=True,
-        risk_scale=risk_scale,
-        cooldown_scale=cooldown_scale,
-        reasons=[f"ok: regime={base.name}"],
-        adx=adx,
-        vol_state=vol_state,
-        order_book=order_book
-    )
-
-
-
-
-def compute_direction(df_1h, regime: "Decision") -> DirectionResult:
+def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
     """
     1h 方向层（Bias, not Entry）：
     - 结构：ema20 vs ema50 决定 bull/bear 结构
     - 价格位置：Momentum / Pullback / Breakdown 三段定级
     - 修正项：ADX 强弱、EMA20 slope、extension(乖离率)、regime.allow_trend gate
-    目标：宽容地保持方向偏置，不在回调区丢方向，但在“走平/追高/环境不允许”时降权。
+    目标：宽容地保持方向偏置，不在回调区丢方向，但在"走平/追高/环境不允许"时降权。
     """
     reasons: List[str] = []
 
@@ -322,7 +44,7 @@ def compute_direction(df_1h, regime: "Decision") -> DirectionResult:
 
     # ---- Tunables（你后面可以放进 config） ----
     min_slope = 0.0002         # 0.02%/bar：过滤走平假趋势（按品种可调）
-    ext_limit = 0.02           # 2%：开始认为“追高/追低风险上升”
+    ext_limit = 0.02           # 2%：开始认为"追高/追低风险上升"
     ext_hard  = 0.035          # 3.5%：更重惩罚
     ext_penalty_max = 0.15     # 最大扣分
     slope_penalty = 0.12       # 走平扣分
@@ -438,13 +160,12 @@ def compute_direction(df_1h, regime: "Decision") -> DirectionResult:
     return DirectionResult(side=side, confidence=conf, reasons=reasons)
 
 
-
-def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
+def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Decision) -> TriggerResult:
     """
-    15m Trigger（入场触发器，负责“现在能不能上车”）
+    15m Trigger（入场触发器，负责"现在能不能上车"）
 
     触发形态：
-    A) Pullback（优先）：位置靠近 EMA20 + “动作确认”（reclaim/reject + 反转K线）
+    A) Pullback（优先）：位置靠近 EMA20 + "动作确认"（reclaim/reject + 反转K线）
     B) Breakout（其次）：突破前N根HH/LL（不含当前K）+ close确认 + 事件触发(跨越) + 结构过滤
 
     strict_entry：
@@ -521,16 +242,7 @@ def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
             if is_green:   reasons.append("15m: green candle")
 
     elif dir_res.side == Side.SHORT and in_bear_struct:
-        '''
-         空头趋势里，EMA20 是“动态压力位”。
-        价格上去试探 → 被卖盘打下来 → 收盘压在 EMA20 下方
-        ⇒ 这是一个“卖方仍然控制市场”的信号
-        reject=True 这根 15m K 线试图回到 EMA20 上方，但失败了，卖方仍然控制市场
-        '''
         reject = (high >= ema20) and (close <= ema20)
-        '''
-          卖方是否已经真正出手并占优
-        '''
         action_ok = (reject and is_red) if strict else (reject or is_red)
 
         if near_ema20 and close <= ema20 and action_ok:
@@ -542,7 +254,7 @@ def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
             if reject:     reasons.append("15m: reject (high>=ema20 & close<=ema20)")
             if is_red:     reasons.append("15m: red candle")
 
-    # -------- 6) B) 突破前 N 根高点/低点 入场 Breakout trigger (close-confirmed + exclude current bar + event-based) --------
+    # -------- 6) B) 突破前 N 根高点/低点 入场 Breakout trigger --------
     is_breakout = False
     if not entry_ok:
         # 用前 N 根（不含当前K）来算 HH/LL；样本不足则自动缩短窗口
@@ -564,9 +276,6 @@ def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
                 reasons.append(f"15m: breakout close-confirmed above {win_len}-bar HH + pad (long)")
 
         elif dir_res.side == Side.SHORT and in_bear_struct:
-            """
-                上一根还没跌破 这一根收盘确认跌破
-            """
             if (prev_close > dn_level) and (close <= dn_level):
                 entry_ok = True
                 is_breakout = True
@@ -590,26 +299,19 @@ def compute_trigger(df_15m, dir_res: DirectionResult, regime) -> TriggerResult:
 
 
 def compute_validity_and_risk(
-    df_15m,
-    df_5m,
-    dir_res,
-    trg_res,
-    regime,
-    asset_info,
+    df_15m: pd.DataFrame,
+    df_5m: Optional[pd.DataFrame],
+    dir_res: DirectionResult,
+    trg_res: TriggerResult,
+    regime: Decision,
+    asset_info: PerpAssetInfo,
     position: Optional[PositionState] = None,
 ) -> ValidityResult:
     """
     实盘级 Validity & Risk（风险有效性层）
     分两条路径：
-    - Flat（无仓位）：只在 trg_res.entry_ok 为 True 时，计算“开仓止损 + 入场质量”
-    - In-Position（有仓位）：无论 trg_res.entry_ok 是否 True，都计算“退出/反手/追踪止损”
-
-    关键点：
-    1) stop 基准使用 entry_ref（突破单/限价单不会错位）
-    2) 结构止损按触发类型区分（pullback vs breakout）
-    3) 5m adverse drift 用于降权，strict 下可直接 veto
-    4) exit_ok：优先结构破坏，其次 EMA 反穿（最小兜底）
-    5) flip_ok：需要“反向触发 + 结构破坏 +（可选）大周期确认/strict”
+    - Flat（无仓位）：只在 trg_res.entry_ok 为 True 时，计算"开仓止损 + 入场质量"
+    - In-Position（有仓位）：无论 trg_res.entry_ok 是否 True，都计算"退出/反手/追踪止损"
     """
     reasons: List[str] = []
 
@@ -632,13 +334,13 @@ def compute_validity_and_risk(
         return ValidityResult(None, False, False, 0.0, ["15m: ATR invalid (<=0)"])
 
     # 是否有仓位（持仓管理路径）
-    has_pos = bool(position and position.has_position and position.size > 0)
+    has_pos = bool(position and position.size > 0)
 
     # ----------------------------------------------------------------------
     # A) FLAT：没有仓位
     # ----------------------------------------------------------------------
     if not has_pos:
-        # 没触发入场就不算“开仓止损/质量”（省算力，也避免 reasons 污染）
+        # 没触发入场就不算"开仓止损/质量"（省算力，也避免 reasons 污染）
         if not getattr(trg_res, "entry_ok", False):
             return ValidityResult(None, False, False, 0.0, ["flat: no entry -> skip validity"])
 
@@ -650,19 +352,14 @@ def compute_validity_and_risk(
         entry_ref = float(getattr(trg_res, "entry_price_hint", None) or close15)
 
         # --- 1) 初始止损：ATR + 结构（按触发类型分开） ---
-        # ATR 止损距离：strict 更紧（更苛刻环境）
         k_atr = 1.25 if strict else 1.55
         atr_dist = k_atr * atr15
 
-        # 结构止损窗口
-        # pullback：更看重最近 swing（更“贴结构”）
-        # breakout：更看重突破阈值回落失效（更像“失效点止损”）
+        # 判断是否为突破类型
         is_breakout = False
-        # 如果你的 TriggerResult 里有 is_breakout 字段，直接用它；否则从 reasons 判断也行
         if hasattr(trg_res, "is_breakout"):
             is_breakout = bool(trg_res.is_breakout)
         else:
-            # 兜底：reasons 里包含 breakout/breakdown 视为突破类
             rs = " ".join(getattr(trg_res, "reasons", [])).lower()
             is_breakout = ("breakout" in rs) or ("breakdown" in rs)
 
@@ -673,21 +370,16 @@ def compute_validity_and_risk(
 
         # 对不同触发类型设置结构止损
         if dir_res.side == Side.LONG:
-            # ATR 基准
             atr_sl = entry_ref - atr_dist
 
             if is_breakout:
-                # 突破单：失效点通常在 “突破位下方一点” 或 “回落到 ema20 下方”
-                # 这里给一个更稳健的：突破位 - 0.25*ATR，且不低于 ema20 - 0.25*ATR
                 breakout_level = float(getattr(trg_res, "entry_price_hint", entry_ref))
                 struct_sl = max(breakout_level - 0.25 * atr15, ema20_15 - 0.25 * atr15)
                 reasons.append("stop: breakout long -> invalidation below breakout/ema20")
             else:
-                # 回调单：结构止损在最近 swing low 下方一点
                 struct_sl = swing_low - 0.10 * atr15
                 reasons.append("stop: pullback long -> below swing low")
 
-            # 取更紧（更保守）= 更高的止损
             stop_price = max(atr_sl, struct_sl)
             reasons.append(f"stop_price(long): max(atr={atr_sl:.2f}, struct={struct_sl:.2f}) -> {stop_price:.2f}")
 
@@ -702,7 +394,7 @@ def compute_validity_and_risk(
                 struct_sl = swing_high + 0.10 * atr15
                 reasons.append("stop: pullback short -> above swing high")
 
-            stop_price = min(atr_sl, struct_sl)  # 更紧=更低的止损（对空头是更靠近价格的上方止损）
+            stop_price = min(atr_sl, struct_sl)
             reasons.append(f"stop_price(short): min(atr={atr_sl:.2f}, struct={struct_sl:.2f}) -> {stop_price:.2f}")
 
         # --- 2) 入场质量：5m adverse drift（触发后立刻走坏就降权/strict veto） ---
@@ -723,9 +415,6 @@ def compute_validity_and_risk(
         # strict 下：如果质量太差，可以直接否决入场（更实盘）
         if strict and quality < 0.45:
             reasons.append("strict: quality too low -> veto entry")
-            # 这里不直接返回 entry_ok=False（entry_ok 在 build_signal 算）
-            # 但你可以让 score_signal 看到 quality 很低就过不了阈值。
-            pass
 
         quality = max(0.0, min(1.0, quality))
         # flat 时：不做 exit/flip（因为没有仓）
@@ -734,19 +423,15 @@ def compute_validity_and_risk(
     # ----------------------------------------------------------------------
     # B) IN-POSITION：有仓位（持仓管理）
     # ----------------------------------------------------------------------
-    # 持仓侧以 position 为准，不要用 dir_res（方向是 bias，不是持仓事实）
     pos_side = position.side
     entry_px = float(position.entry_price)
 
     # --- 1) 追踪止损（Trailing Stop）：用 15m ATR/EMA 做一个稳健版本 ---
-    # 多头：stop 只能上移（提高），不能下移
-    # 空头：stop 只能下移（降低），不能上移
     k_trail = 1.10 if strict else 1.35
     trail_dist = k_trail * atr15
 
     # 追踪参考：用 EMA20 附近更贴趋势（也可以换成最近 swing）
     if pos_side == Side.LONG:
-        # 候选止损：EMA20 下方一点 or (close - trail_dist)
         cand1 = ema20_15 - 0.25 * atr15
         cand2 = close15 - trail_dist
         new_stop = max(cand1, cand2)
@@ -755,8 +440,7 @@ def compute_validity_and_risk(
         if position.stop_price is not None:
             stop_price = max(float(position.stop_price), new_stop)
         else:
-            # 没有旧止损则用一个初始止损
-            stop_price = min(entry_px - 1.55 * atr15, new_stop)  # 防止过紧也可按你偏好调
+            stop_price = min(entry_px - 1.55 * atr15, new_stop)
         reasons.append(f"trail_stop(long): max(ema20-0.25atr={cand1:.2f}, close-katr={cand2:.2f}) -> {stop_price:.2f}")
 
     else:  # SHORT
@@ -773,7 +457,7 @@ def compute_validity_and_risk(
     # --- 2) exit_ok：结构破坏优先，EMA 反穿兜底 ---
     exit_ok = False
 
-    # 结构破坏：用近 10 根 swing 做“破结构”
+    # 结构破坏：用近 10 根 swing 做"破结构"
     N = 10
     swing_low  = float(df_15m["low"].iloc[-N:].min())
     swing_high = float(df_15m["high"].iloc[-N:].max())
@@ -808,11 +492,8 @@ def compute_validity_and_risk(
             reasons.append("exit: price >= stop_price")
 
     # --- 3) flip_ok：严格条件（默认只在 strict 或极强证据下允许） ---
-    # 反手需要：
-    # - 当前持仓已经满足 exit_ok（先认错）
-    # - 同时出现“反向结构 + 反向触发事件”（避免震荡里来回反手）
     flip_ok = False
-    allow_flip = bool(getattr(regime, "allow_flip", False))  # 你也可以直接 strict 才允许
+    allow_flip = bool(getattr(regime, "allow_flip", False))
     if strict or allow_flip:
         # 简化：用 15m 的结构 + close-confirmed 反向突破当作 flip 触发
         win_len = min(20, len(df_15m) - 1)
@@ -853,7 +534,7 @@ def compute_validity_and_risk(
     return ValidityResult(stop_price, exit_ok, flip_ok, quality, reasons)
 
 
-def score_signal(dir_res, trg_res, val_res, regime) -> Tuple[float, List[str]]:
+def score_signal(dir_res: DirectionResult, trg_res: TriggerResult, val_res: ValidityResult, regime: Decision) -> Tuple[float, List[str]]:
     """
     打分：Direction(40) + Trigger(40) + Quality(20)
     """
@@ -879,8 +560,19 @@ def score_signal(dir_res, trg_res, val_res, regime) -> Tuple[float, List[str]]:
 
     return score, reasons
 
+
 @measure_time
-def build_signal(df_1h, df_15m, df_5m, regime:"Decision", asset_info, now_ts: float) -> SignalSnapshot:
+def build_signal(
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    df_5m: pd.DataFrame,
+    regime: Decision,
+    asset_info: PerpAssetInfo,
+    now_ts: float
+) -> SignalSnapshot:
+    """构建完整的交易信号"""
+    from src.data.models import SignalSnapshot
+
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)
     val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info)
@@ -902,99 +594,4 @@ def build_signal(df_1h, df_15m, df_5m, regime:"Decision", asset_info, now_ts: fl
         reasons=reasons,
         ttl_seconds=(45 if getattr(regime, "strict_entry", False) else 120),
         created_ts=now_ts
-    )
-
-OrderType = Literal["MARKET", "LIMIT"]
-def signal_to_trade_plan(
-    *,
-    signal: "SignalSnapshot",
-    regime: "Decision",
-    account: "AccountOverview",
-    asset: "PerpAssetInfo",
-    symbol: str,
-    risk_pct: float,
-    leverage: float,
-    post_only: bool,
-    slippage: float = 0.001,
-    rr: float = 1.8,   # take-profit = rr * R
-) -> TradePlan:
-    # 0) 没信号 / 环境禁止
-    if not signal.entry_ok:
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["signal.entry_ok = False"])
-
-    if not getattr(regime, "allow_new_entry", True):
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["regime disallows new entry"])
-
-    if signal.side == Side.NONE:
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["signal.side = NONE"])
-
-    # 1) 仓位冲突：默认不加仓、不反手（你以后再加）
-    pos_raw = find_position(account, symbol)
-    if pos_raw:
-        pos = position_to_state(pos_raw)
-        if pos.size > 0 and pos.side == signal.side:
-            return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                             ["existing same-side position -> skip"])
-
-    # 2) 风险预算
-    equity = account_total_usdc(account)
-    risk_budget = equity * float(risk_pct) * float(getattr(regime, "risk_scale", 1.0) or 1.0)
-
-    entry_ref = signal.entry_price_hint
-    stop = signal.stop_price
-    if entry_ref is None or stop is None:
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["missing entry_ref or stop_price"])
-
-    R = abs(entry_ref - stop)
-    if R <= 0:
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["invalid R (entry-stop <= 0)"])
-
-    # 3) 用风险算 qty（核心）
-    raw_qty = risk_budget / R
-
-    # 4) 再加一个“名义上限”兜底（防止风控参数异常）
-    max_notional = max_notional_by_equity(equity, leverage)
-    max_qty_by_notional = estimate_qty_from_notional(max_notional, entry_ref)
-    qty = min(raw_qty, max_qty_by_notional)
-
-    # 5) 数量精度
-    qty = round_qty_by_decimals(qty, int(asset.size_decimals or 0))
-    if qty <= 0:
-        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
-                         ["qty too small after rounding"])
-
-    # 6) 下单类型：分数高 -> 市价，分数一般 -> 限价（更省滑点）
-    if signal.score >= 90:
-        entry_type: OrderType = "MARKET"
-        entry_price = None
-    else:
-        entry_type: OrderType = "LIMIT"
-        if signal.side == Side.LONG:
-            entry_price = entry_ref * (1 - slippage)
-        else:
-            entry_price = entry_ref * (1 + slippage)
-
-    # 7) 止盈：按 RR
-    if signal.side == Side.LONG:
-        tp = entry_ref + rr * R
-    else:
-        tp = entry_ref - rr * R
-
-    return TradePlan(
-        action="OPEN",
-        symbol=symbol,
-        side=signal.side,
-        qty=qty,
-        entry_type=entry_type,
-        entry_price=entry_price,
-        stop_price=stop,
-        take_profit=tp,
-        reduce_only=False,
-        post_only=post_only,
-        reasons=signal.reasons,
     )

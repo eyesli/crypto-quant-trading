@@ -1,16 +1,12 @@
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from hyperliquid.info import Info
 
-from src.tools.system_config import measure_time
+from src.data.models import AccountOverview
+from src.tools.performance import measure_time
 
 
-@dataclass
-class AccountOverview:
-    raw_user_state: Dict[str, Any]
-    positions: List[Dict[str, Any]]
-    open_orders: List[Dict[str, Any]]
+
 
 def _to_float(x) -> Optional[float]:
     try:

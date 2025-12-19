@@ -18,6 +18,11 @@ PositionSide = Literal["long", "short", "flat"]
 PlanAction = Literal["OPEN", "CLOSE", "HOLD", "FLIP"]
 OrderType = Literal["market", "limit"]
 
+@dataclass
+class AccountOverview:
+    raw_user_state: Dict[str, Any]
+    positions: List[Dict[str, Any]]
+    open_orders: List[Dict[str, Any]]
 
 class Action(str, Enum):
     STOP_ALL = "STOP_ALL"  # 禁新开仓/加仓（一般仍允许平/减/止损）

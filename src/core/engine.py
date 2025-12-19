@@ -1,18 +1,24 @@
+"""
+交易引擎模块
+负责协调数据获取、策略决策和交易执行
+"""
 from __future__ import annotations
 
-import functools
 import os
 import time
 from typing import Dict
 
 from hyperliquid.exchange import Exchange
 
-from src.account import fetch_account_overview
-from src.market_data import ohlcv_to_df, compute_technical_factors, classify_trend_range, classify_timing_state, \
-    fetch_order_book_info, build_perp_asset_map
-from src.models import RegimeState, Action, PerpAssetInfo, Decision
-from src.strategy import classify_vol_state, decide_regime, build_signal, signal_to_trade_plan
-from src.tools.system_config import measure_time
+from src.account.account import fetch_account_overview
+from src.data.fetcher import ohlcv_to_df, fetch_order_book_info, build_perp_asset_map
+from src.data.indicators import compute_technical_factors
+from src.data.analyzer import classify_trend_range, classify_timing_state
+from src.data.models import RegimeState, PerpAssetInfo, Decision
+from src.strategy.regime import classify_vol_state, decide_regime
+from src.strategy.signals import build_signal
+from src.strategy.planner import signal_to_trade_plan
+from src.tools.performance import measure_time
 from src.tools.utils import candles_last_n_closed, hl_candles_to_ohlcv_list
 
 SYMBOL = "ETH"
@@ -23,6 +29,8 @@ RISK_PCT = 0.01
 LEVERAGE = 5.0
 
 MAX_SPREAD_BPS = 2.0
+
+
 @measure_time
 def start_trade(exchange: Exchange, state: RegimeState) -> None:
     """
@@ -31,7 +39,6 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     - 策略生成 TradePlan
     - 执行器（可 DRY_RUN）
     """
-
     account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"))
 
     df_1h = ohlcv_to_df(hl_candles_to_ohlcv_list(
@@ -43,13 +50,13 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     df_5m = ohlcv_to_df(hl_candles_to_ohlcv_list(
         candles_last_n_closed(exchange.info, SYMBOL, "5m", limit=500, safety_ms=30000)
     ))
-    #
-    # --- 2) 同一套指标，分别计算（正确） ---
+
+    # 计算技术指标
     indicators_1h = compute_technical_factors(df_1h)
     indicators_15m = compute_technical_factors(df_15m)
     indicators_5m = compute_technical_factors(df_5m)
 
-    # --- 3) 1h：环境/方向/权限 ---
+    # 1h：环境/方向/权限
     base, adx = classify_trend_range(df=indicators_1h, prev=state.prev_base)
     vol_state, vol_dbg = classify_vol_state(indicators_1h)
     timing = classify_timing_state(indicators_1h)
@@ -60,7 +67,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         timing=timing,
         max_spread_bps=MAX_SPREAD_BPS
     )
-    perp_asset_map:Dict[str, PerpAssetInfo] = build_perp_asset_map(exchange, ["ETH", "BTC", "SOL"])
+    perp_asset_map: Dict[str, PerpAssetInfo] = build_perp_asset_map(exchange, ["ETH", "BTC", "SOL"])
     asset_info = perp_asset_map.get(SYMBOL)
     if asset_info is None:
         print(f"⚠️ asset_info missing for {SYMBOL}")
@@ -75,9 +82,8 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         regime=regime,
         asset_info=asset_info,
         now_ts=now_ts
-        # account_overview
     )
-    #
+
     plan = signal_to_trade_plan(
         signal=signal,
         regime=regime,
@@ -91,9 +97,4 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     )
 
     print("🧭 plan:", plan)
-
     state.prev_base = base
-    # decide_regime();
-    # plan:TradePlan = generate_trade_plan(account_overview, market_data, cfg=strategy_cfg)
-    # print(plan.score)
-    # execute_trade_plan(exchange, plan, cfg=exec_cfg)

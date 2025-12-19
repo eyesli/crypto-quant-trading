@@ -10,12 +10,9 @@ from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils.constants import MAINNET_API_URL
 
-from src.market_data import build_perp_asset_map
-from src.models import RegimeState
-from src.service import start_trade
+from src.data.models import RegimeState
+from src.core.engine import start_trade
 from dotenv import load_dotenv
-
-from src.tools.api import call_deepseek
 
 
 def main() -> None:
