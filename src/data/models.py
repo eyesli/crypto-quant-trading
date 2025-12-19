@@ -22,18 +22,20 @@ OrderType = Literal["market", "limit"]
 
 @dataclass
 class AccountOverview:
-    raw_user_state: Dict[str, Any]
-    positions: List[Dict[str, Any]]
-    open_orders: List[Dict[str, Any]]
+    """账户概览（旧版本，保留用于向后兼容）"""
+    raw_user_state: Dict[str, Any]  # 原始用户状态字典
+    positions: List[Dict[str, Any]]  # 仓位列表（字典格式）
+    open_orders: List[Dict[str, Any]]  # 挂单列表（字典格式）
 
 class Action(str, Enum):
+    """交易动作枚举"""
     STOP_ALL = "STOP_ALL"  # 禁新开仓/加仓（一般仍允许平/减/止损）
     NO_NEW_ENTRY = "NO_NEW_ENTRY"  # 禁新开仓（允许管理仓位） 但别乱砍已有仓位。
     OK = "OK"  # 正常运行
 
 
 class MarketRegime(str, Enum):
-
+    """市场体制枚举"""
     TREND = "trend"
     # 一般ADX ≥ 26 (高信噪比)
     # 状态：惯性与共识
@@ -68,12 +70,13 @@ class VolState(str, Enum):
 
 class Slope(str, Enum):
     """
-    Trend/vol timing direction for smoothed slope series.
+    趋势/波动率斜率方向枚举
+    用于平滑斜率序列的当前方向判断
     """
-    UP = "UP"
-    DOWN = "DOWN"
-    FLAT = "FLAT"
-    UNKNOWN = "UNKNOWN"
+    UP = "UP"  # 上升
+    DOWN = "DOWN"  # 下降
+    FLAT = "FLAT"  # 平坦
+    UNKNOWN = "UNKNOWN"  # 未知
 
 
 # =============================================================================
@@ -84,20 +87,22 @@ class Slope(str, Enum):
 @dataclass(frozen=True)
 class SlopeState:
     """
-    A typed snapshot of a slope series' current direction and thresholding.
+    斜率状态快照
+    记录斜率序列的当前方向和阈值信息
     """
-    state: Slope = Slope.UNKNOWN
-    cur: Optional[float] = None
-    eps: Optional[float] = None
+    state: Slope = Slope.UNKNOWN  # 斜率方向状态
+    cur: Optional[float] = None  # 当前斜率值
+    eps: Optional[float] = None  # 阈值（epsilon），用于判断斜率是否显著
 
 
 @dataclass(frozen=True)
 class TimingState:
     """
-    Typed timing state for regime decisions.
+    时机状态
+    用于策略决策的时机判断状态
     """
-    adx_slope: SlopeState = field(default_factory=SlopeState)
-    bbw_slope: SlopeState = field(default_factory=SlopeState)
+    adx_slope: SlopeState = field(default_factory=SlopeState)  # ADX 斜率状态
+    bbw_slope: SlopeState = field(default_factory=SlopeState)  # 布林带宽度（BBW）斜率状态
 
 @dataclass(frozen=True)
 class OrderBookInfo:
@@ -105,18 +110,18 @@ class OrderBookInfo:
     订单簿微观结构快照 (Market Microstructure Snapshot)
     统一替代之前的 MarketMetrics
     """
-    symbol: str
-    best_bid: float
-    best_ask: float
-    mid_price: float
-    spread_bps: float
+    symbol: str  # 交易对符号
+    best_bid: float  # 最优买价
+    best_ask: float  # 最优卖价
+    mid_price: float  # 中间价（(best_bid + best_ask) / 2）
+    spread_bps: float  # 价差（基点，basis points）
 
     # 深度信息 (USDT Value)
-    bid_depth_value: float
-    ask_depth_value: float
-    imbalance: float  # -1.0 ~ +1.0
+    bid_depth_value: float  # 买盘深度价值（USDT）
+    ask_depth_value: float  # 卖盘深度价值（USDT）
+    imbalance: float  # 订单簿不平衡度，范围 -1.0 ~ +1.0（负值表示卖压，正值表示买压）
 
-    timestamp: int
+    timestamp: int  # 时间戳（毫秒）
 
     def __repr__(self):
         return (f"OrderBook({self.symbol} | Spread: {self.spread_bps:.2f} bps | "
@@ -128,36 +133,36 @@ class OrderBookInfo:
 @dataclass(frozen=True)
 class PerpAssetInfo:
     """
-    Typed snapshot of Hyperliquid perp asset context (meta + ctx).
-    Returned by build_perp_asset_map().
+    Hyperliquid 永续合约资产信息快照（元数据 + 上下文）
+    由 build_perp_asset_map() 返回
     """
 
     # Static metadata (contract rules)
-    symbol: str
-    size_decimals: Optional[int] = None
-    max_leverage: Optional[int] = None
-    only_isolated: bool = False
+    symbol: str  # 交易对符号
+    size_decimals: Optional[int] = None  # 数量精度（小数位数）
+    max_leverage: Optional[int] = None  # 最大杠杆倍数
+    only_isolated: bool = False  # 是否仅支持逐仓模式
 
     # Pricing / risk anchors
-    mark_price: Decimal = Decimal("0")
-    mid_price: Decimal = Decimal("0")
-    oracle_price: Decimal = Decimal("0")
-    prev_day_price: Decimal = Decimal("0")
+    mark_price: Decimal = Decimal("0")  # 标记价格（用于计算未实现盈亏）
+    mid_price: Decimal = Decimal("0")  # 中间价（(bid + ask) / 2）
+    oracle_price: Decimal = Decimal("0")  # 预言机价格
+    prev_day_price: Decimal = Decimal("0")  # 前一日收盘价
 
     # Funding
-    funding_rate: Decimal = Decimal("0")
-    premium: Decimal = Decimal("0")
+    funding_rate: Decimal = Decimal("0")  # 资金费率
+    premium: Decimal = Decimal("0")  # 溢价
 
     # Participation / activity
-    open_interest: Decimal = Decimal("0")
-    day_notional_volume: Decimal = Decimal("0")
+    open_interest: Decimal = Decimal("0")  # 未平仓合约量（Open Interest）
+    day_notional_volume: Decimal = Decimal("0")  # 当日名义交易量
 
     # Microstructure / impact
-    impact_bid: Decimal = Decimal("0")
-    impact_ask: Decimal = Decimal("0")
+    impact_bid: Decimal = Decimal("0")  # 买盘冲击成本
+    impact_ask: Decimal = Decimal("0")  # 卖盘冲击成本
 
     # Raw ctx for debugging/backfill (exclude from repr to keep logs clean)
-    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)  # 原始上下文数据（用于调试/回填，repr 中不显示）
 
 
 @dataclass(frozen=True)
@@ -165,12 +170,12 @@ class MarketDataSnapshot:
     """
     市场数据快照 (Data Layer Output)
     """
-    symbol: str
-    ohlcv: dict[str, list[list[float]]]
-    ohlcv_df: dict[str, "pd.DataFrame"]
+    symbol: str  # 交易对符号
+    ohlcv: dict[str, list[list[float]]]  # OHLCV 原始数据，key 为时间周期（如 "1h", "15m"），value 为 OHLCV 列表
+    ohlcv_df: dict[str, "pd.DataFrame"]  # OHLCV DataFrame，key 为时间周期，value 为 pandas DataFrame
 
     # ✅ 修改：统一使用 OrderBookInfo
-    metrics: OrderBookInfo
+    metrics: OrderBookInfo  # 订单簿信息
 
 
 # =============================================================================
@@ -179,76 +184,84 @@ class MarketDataSnapshot:
 
 @dataclass(frozen=True)
 class TrendLineSignal:
-    ema_50: Optional[float] = None
-    sma_50: Optional[float] = None
-    bias_to_ema: Optional[float] = None
-    ema_gt_sma: Optional[bool] = None
-    ema_slope_5: Optional[float] = None
+    """趋势线信号"""
+    ema_50: Optional[float] = None  # 50 周期指数移动平均线
+    sma_50: Optional[float] = None  # 50 周期简单移动平均线
+    bias_to_ema: Optional[float] = None  # 价格相对 EMA 的偏差
+    ema_gt_sma: Optional[bool] = None  # EMA 是否大于 SMA（趋势向上）
+    ema_slope_5: Optional[float] = None  # EMA 的 5 周期斜率
 
 
 @dataclass(frozen=True)
 class MomentumSignal:
-    macd_hist: Optional[float] = None
-    macd_hist_prev: Optional[float] = None
-    direction: int = 0
-    strengthening: bool = False
-    weakening: bool = False
+    """动量信号"""
+    macd_hist: Optional[float] = None  # MACD 柱状图当前值
+    macd_hist_prev: Optional[float] = None  # MACD 柱状图前一个值
+    direction: int = 0  # 方向：1=向上，-1=向下，0=无方向
+    strengthening: bool = False  # 动量是否在加强
+    weakening: bool = False  # 动量是否在减弱
 
 
 @dataclass(frozen=True)
 class BreakoutSignal:
-    breakout_up: int = 0
-    breakout_down: int = 0
-    fresh_up: bool = False
-    fresh_down: bool = False
-    vol_spike_ratio: Optional[float] = None
+    """突破信号"""
+    breakout_up: int = 0  # 向上突破次数
+    breakout_down: int = 0  # 向下突破次数
+    fresh_up: bool = False  # 是否刚发生向上突破
+    fresh_down: bool = False  # 是否刚发生向下突破
+    vol_spike_ratio: Optional[float] = None  # 成交量放大倍数
 
 
 @dataclass(frozen=True)
 class VolatilitySignal:
-    bb_width: Optional[float] = None
-    p20: Optional[float] = None
-    p80: Optional[float] = None
-    squeeze: bool = False
-    expansion: bool = False
+    """波动率信号"""
+    bb_width: Optional[float] = None  # 布林带宽度
+    p20: Optional[float] = None  # 布林带下轨（20% 分位）
+    p80: Optional[float] = None  # 布林带上轨（80% 分位）
+    squeeze: bool = False  # 是否处于压缩状态（低波动）
+    expansion: bool = False  # 是否处于扩张状态（高波动）
 
 
 @dataclass(frozen=True)
 class OverheatSignal:
-    rsi_14: Optional[float] = None
-    overbought: bool = False
-    oversold: bool = False
+    """过热信号（超买超卖）"""
+    rsi_14: Optional[float] = None  # 14 周期 RSI 值
+    overbought: bool = False  # 是否超买（RSI > 70）
+    oversold: bool = False  # 是否超卖（RSI < 30）
 
 
 @dataclass(frozen=True)
 class VolumeConfirmationSignal:
-    obv_now: Optional[float] = None
-    obv_prev5: Optional[float] = None
-    obv_delta_5: Optional[float] = None
-    direction: int = 0
+    """成交量确认信号"""
+    obv_now: Optional[float] = None  # 当前 OBV（能量潮）值
+    obv_prev5: Optional[float] = None  # 5 周期前的 OBV 值
+    obv_delta_5: Optional[float] = None  # OBV 的 5 周期变化量
+    direction: int = 0  # 方向：1=向上，-1=向下，0=无方向
 
 
 @dataclass(frozen=True)
 class StructureCostSignal:
-    avwap_full: Optional[float] = None
-    bias_to_avwap: Optional[float] = None
-    price_to_poc_pct: Optional[float] = None
+    """结构成本信号"""
+    avwap_full: Optional[float] = None  # 全局成交量加权平均价（AVWAP）
+    bias_to_avwap: Optional[float] = None  # 价格相对 AVWAP 的偏差
+    price_to_poc_pct: Optional[float] = None  # 价格相对 POC（成交量最大价位）的百分比
 
 
 @dataclass(frozen=True)
 class TechnicalLinesSnapshot:
-    ok: bool
-    close: Optional[float] = None
-    adx: Optional[float] = None
-    trend: TrendLineSignal = field(default_factory=TrendLineSignal)
-    momentum: MomentumSignal = field(default_factory=MomentumSignal)
-    breakout: BreakoutSignal = field(default_factory=BreakoutSignal)
-    volatility: VolatilitySignal = field(default_factory=VolatilitySignal)
-    overheat: OverheatSignal = field(default_factory=OverheatSignal)
-    volume: VolumeConfirmationSignal = field(default_factory=VolumeConfirmationSignal)
-    structure: StructureCostSignal = field(default_factory=StructureCostSignal)
-    notes: tuple[str, ...] = ()
-    debug: Optional[dict[str, Any]] = None
+    """技术指标快照"""
+    ok: bool  # 数据是否有效
+    close: Optional[float] = None  # 收盘价
+    adx: Optional[float] = None  # ADX（平均趋向指标）值
+    trend: TrendLineSignal = field(default_factory=TrendLineSignal)  # 趋势线信号
+    momentum: MomentumSignal = field(default_factory=MomentumSignal)  # 动量信号
+    breakout: BreakoutSignal = field(default_factory=BreakoutSignal)  # 突破信号
+    volatility: VolatilitySignal = field(default_factory=VolatilitySignal)  # 波动率信号
+    overheat: OverheatSignal = field(default_factory=OverheatSignal)  # 过热信号
+    volume: VolumeConfirmationSignal = field(default_factory=VolumeConfirmationSignal)  # 成交量确认信号
+    structure: StructureCostSignal = field(default_factory=StructureCostSignal)  # 结构成本信号
+    notes: tuple[str, ...] = ()  # 备注信息
+    debug: Optional[dict[str, Any]] = None  # 调试信息
 
 
 # =============================================================================
@@ -268,7 +281,7 @@ class Decision:
     # ==========================================
     # 1. 核心指令 (Core Instructions)
     # ==========================================
-    action: Action
+    action: Action  # 交易动作（STOP_ALL/NO_NEW_ENTRY/OK）
 
     regime: MarketRegime
     # 当前判定出的市场体制/状态。
@@ -353,20 +366,20 @@ class Decision:
 @dataclass(frozen=True)
 class TradePlan:
     """
-    最终交易计划：由 generate_trade_plan 生成
+    最终交易计划：由 generate_trade_plan 生成（旧版本，保留用于向后兼容）
     """
-    symbol: str
-    action: PlanAction
-    direction: Optional[PositionSide] = None
-    close_direction: Optional[PositionSide] = None
-    order_type: OrderType = "market"
-    entry_price: Optional[float] = None
-    open_amount: float = 0.0
-    close_amount: float = 0.0
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
-    reason: str = ""
-    score: float = 0.0
+    symbol: str  # 交易对符号
+    action: PlanAction  # 交易动作（OPEN/CLOSE/HOLD/FLIP）
+    direction: Optional[PositionSide] = None  # 开仓方向（long/short/flat）
+    close_direction: Optional[PositionSide] = None  # 平仓方向
+    order_type: OrderType = "market"  # 订单类型（market/limit）
+    entry_price: Optional[float] = None  # 入场价格（限价单时使用）
+    open_amount: float = 0.0  # 开仓数量
+    close_amount: float = 0.0  # 平仓数量
+    stop_loss: Optional[float] = None  # 止损价格
+    take_profit: Optional[float] = None  # 止盈价格
+    reason: str = ""  # 交易原因说明
+    score: float = 0.0  # 信号评分
 
 
 # =============================================================================
@@ -375,57 +388,64 @@ class TradePlan:
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    symbol: str
-    risk_pct: float = 0.01
-    leverage: float = 5.0
-    min_score_to_open: float = 0.35
-    min_score_to_flip: float = 0.55
-    atr_stop_mult: float = 1.5
-    atr_tp_mult: float = 3.0
-    cooldown_bars_1m: int = 3
+    """策略配置"""
+    symbol: str  # 交易对符号
+    risk_pct: float = 0.01  # 风险百分比（每次交易的风险资金占比）
+    leverage: float = 5.0  # 杠杆倍数
+    min_score_to_open: float = 0.35  # 开仓最低评分
+    min_score_to_flip: float = 0.55  # 反手最低评分
+    atr_stop_mult: float = 1.5  # 止损 ATR 倍数
+    atr_tp_mult: float = 3.0  # 止盈 ATR 倍数
+    cooldown_bars_1m: int = 3  # 冷却时间（1分钟 K 线数量）
 
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    dry_run: bool = True
-    slippage: float = 0.01
-    post_only: bool = False
+    """执行配置"""
+    dry_run: bool = True  # 是否模拟运行（不实际下单）
+    slippage: float = 0.01  # 滑点（1%）
+    post_only: bool = False  # 是否仅挂单（Post Only 模式）
 
 
 class RegimeState(BaseModel):
-    prev_base: MarketRegime = MarketRegime.UNKNOWN
+    """市场体制状态（用于状态机）"""
+    prev_base: MarketRegime = MarketRegime.UNKNOWN  # 上一个市场体制状态
 
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
 class Side(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
+    """交易方向枚举"""
+    LONG = "LONG"  # 做多
+    SHORT = "SHORT"  # 做空
     # FLAT = "FLAT"  # 明确的空仓信号
-    NONE = "NONE"
+    NONE = "NONE"  # 无方向
 
 @dataclass
 class DirectionResult:
-    side: Side
-    confidence: float              # 0~1
-    reasons: List[str]
+    """方向判断结果"""
+    side: Side  # 交易方向（LONG/SHORT/NONE）
+    confidence: float  # 置信度，范围 0~1
+    reasons: List[str]  # 判断依据列表
 
 @dataclass
 class TriggerResult:
-    entry_ok: bool
-    entry_price_hint: Optional[float]
-    strength: float               # 0~1
-    is_breakout: Optional[bool]
-    reasons: List[str]
+    """触发判断结果"""
+    entry_ok: bool  # 是否满足入场条件
+    entry_price_hint: Optional[float]  # 建议入场价格
+    strength: float  # 触发强度，范围 0~1
+    is_breakout: Optional[bool]  # 是否为突破类型触发
+    reasons: List[str]  # 判断依据列表
 
 @dataclass
 class ValidityResult:
-    stop_price: Optional[float]
-    exit_ok: bool
-    flip_ok: bool
-    quality: float                # 0~1
-    reasons: List[str]
+    """有效性判断结果"""
+    stop_price: Optional[float]  # 止损价格
+    exit_ok: bool  # 是否满足退出条件
+    flip_ok: bool  # 是否满足反手条件
+    quality: float  # 信号质量，范围 0~1
+    reasons: List[str]  # 判断依据列表
 
 
 @dataclass
@@ -444,21 +464,22 @@ class SignalSnapshot:
 
 @dataclass
 class TradePlan:
-    action: Literal["OPEN", "CLOSE", "FLIP", "NONE"]
-    symbol: str
-    side: Optional[Side]          # OPEN/FLIP 时必填
-    qty: float
+    """交易计划（新版本）"""
+    action: Literal["OPEN", "CLOSE", "FLIP", "NONE"]  # 交易动作
+    symbol: str  # 交易对符号
+    side: Optional[Side]  # 交易方向（OPEN/FLIP 时必填）
+    qty: float  # 交易数量
 
-    entry_type: Literal["MARKET", "LIMIT"]
-    entry_price: Optional[float]  # LIMIT 时用
+    entry_type: Literal["MARKET", "LIMIT"]  # 入场订单类型
+    entry_price: Optional[float]  # 入场价格（LIMIT 订单时使用）
 
-    stop_price: Optional[float]
-    take_profit: Optional[float]
+    stop_price: Optional[float]  # 止损价格
+    take_profit: Optional[float]  # 止盈价格
 
-    reduce_only: bool
-    post_only: bool
+    reduce_only: bool  # 是否仅减仓（不允许开新仓）
+    post_only: bool  # 是否仅挂单（Post Only 模式）
 
-    reasons: List[str]
+    reasons: List[str]  # 交易原因说明
 
 
 
@@ -466,9 +487,10 @@ class TradePlan:
 
 @dataclass(frozen=True)
 class CumFunding:
-    all_time: Optional[float]
-    since_change: Optional[float]
-    since_open: Optional[float]
+    """累计资金费率"""
+    all_time: Optional[float]  # 历史累计资金费（从账户创建开始）
+    since_change: Optional[float]  # 最近一次 funding 变化带来的盈亏
+    since_open: Optional[float]  # 自本仓位开仓以来累计 funding
 
     @staticmethod
     def from_dict(d: Optional[Dict[str, Any]]) -> "CumFunding":
@@ -482,8 +504,9 @@ class CumFunding:
 
 @dataclass(frozen=True)
 class LeverageInfo:
-    type: Optional[Literal["cross", "isolated"]]
-    value: Optional[float]
+    """杠杆信息"""
+    type: Optional[Literal["cross", "isolated"]]  # 杠杆类型：cross=全仓，isolated=逐仓
+    value: Optional[float]  # 杠杆倍数
 
     @staticmethod
     def from_any(v: Any) -> "LeverageInfo":
@@ -501,30 +524,31 @@ class LeverageInfo:
 
 @dataclass(frozen=True)
 class PerpPosition:
+    """永续合约仓位信息"""
 
-    coin: str
-    orders: Optional[PositionOrders]
+    coin: str  # 交易币种
+    orders: Optional[PositionOrders]  # 关联的订单信息（TP/SL 等）
 
     # funding
-    cum_funding: CumFunding
+    cum_funding: CumFunding  # 累计资金费率
 
     # entry / liq / margin
-    entry_px: Optional[float]
-    liquidation_px: Optional[float]
-    margin_used: Optional[float]
-    max_leverage: Optional[float]
+    entry_px: Optional[float]  # 平均开仓价
+    liquidation_px: Optional[float]  # 预估爆仓价
+    margin_used: Optional[float]  # 当前仓位占用的保证金（USDC）
+    max_leverage: Optional[float]  # 该币种允许的最大杠杆
 
     # size / exposure / pnl
-    szi: Optional[float]                 # 正多负空
-    position_value: Optional[float]      # 名义价值 USDC
-    unrealized_pnl: Optional[float]
-    return_on_equity: Optional[float]    # 这里先按原字段解析（注意：可能是比例不是百分比）
+    szi: Optional[float]  # 仓位数量（正数=多头，负数=空头）
+    position_value: Optional[float]  # 仓位名义价值（USDC）
+    unrealized_pnl: Optional[float]  # 未实现盈亏
+    return_on_equity: Optional[float]  # 权益回报率（ROE），注意：可能是比例不是百分比
 
     # leverage
-    leverage: LeverageInfo
+    leverage: LeverageInfo  # 杠杆信息
 
     # 额外：保留原始 dict，方便你以后加字段（比如 markPx, pnl, etc.）
-    raw: Dict[str, Any]
+    raw: Dict[str, Any]  # 原始数据字典
 
     @property
     def side(self) -> Optional[Literal["long", "short"]]:
@@ -574,10 +598,11 @@ class PerpPosition:
 
 @dataclass(frozen=True)
 class MarginSummary:
-    account_value: Optional[float]
-    total_margin_used: Optional[float]
-    total_ntl_pos: Optional[float]
-    total_raw_usd: Optional[float]
+    """保证金汇总"""
+    account_value: Optional[float]  # 账户总价值（权益，USDC）
+    total_margin_used: Optional[float]  # 所有仓位占用的保证金总和（USDC）
+    total_ntl_pos: Optional[float]  # 所有仓位名义价值总和（USDC）
+    total_raw_usd: Optional[float]  # 原始盈亏（包含未实现 + funding，USDC）
 
     @staticmethod
     def from_dict(d: Optional[Dict[str, Any]]) -> "MarginSummary":
@@ -592,11 +617,12 @@ class MarginSummary:
 
 @dataclass(frozen=True)
 class AccountState:
-    time_ms: Optional[int]
-    withdrawable: Optional[float]
-    cross_maintenance_margin_used: Optional[float]
-    cross_margin_summary: MarginSummary
-    margin_summary: MarginSummary
+    """账户状态"""
+    time_ms: Optional[int]  # 服务器时间戳（毫秒）
+    withdrawable: Optional[float]  # 可提余额（USDC）
+    cross_maintenance_margin_used: Optional[float]  # 全仓维护保证金占用（USDC）
+    cross_margin_summary: MarginSummary  # 全仓保证金汇总
+    margin_summary: MarginSummary  # 保证金汇总（通常等同 cross_margin_summary）
 
 
 @dataclass(frozen=True)
@@ -604,45 +630,47 @@ class AccountOverview:
     """
     fetch_account_overview 的强类型返回值
     """
-    state: AccountState
-    positions: List[PerpPosition]
-    primary_position: Optional[PerpPosition]
-    open_orders: List[Dict[str, Any]]   # 这里先保留 dict（因为订单结构更复杂/变化更多）
-    raw_user_state: Dict[str, Any]
+    state: AccountState  # 账户状态
+    positions: List[PerpPosition]  # 所有永续仓位列表
+    primary_position: Optional[PerpPosition]  # 主要交易币种的仓位（如果存在）
+    open_orders: List[Dict[str, Any]]  # 挂单列表（这里先保留 dict，因为订单结构更复杂/变化更多）
+    raw_user_state: Dict[str, Any]  # 原始用户状态字典（用于调试/兼容）
 
 @dataclass(frozen=True)
 class TriggerOrder:
-    coin: str
-    side: Optional[str]                 # 原始 side: 'B'/'A' or 'buy'/'sell'
-    size: float
-    limit_px: Optional[float]
-    trigger_px: Optional[float]
-    trigger_condition: Optional[str]
-    is_position_tpsl: bool
-    timestamp: Optional[int]
-    raw: Dict[str, Any]
+    """触发订单（条件单）"""
+    coin: str  # 交易币种
+    side: Optional[str]  # 原始 side: 'B'/'A' or 'buy'/'sell'
+    size: float  # 订单数量
+    limit_px: Optional[float]  # 限价（触发后的执行价格）
+    trigger_px: Optional[float]  # 触发价格
+    trigger_condition: Optional[str]  # 触发条件
+    is_position_tpsl: bool  # 是否为仓位的止盈/止损单
+    timestamp: Optional[int]  # 时间戳
+    raw: Dict[str, Any]  # 原始数据字典
 
 
 @dataclass(frozen=True)
 class NormalOrder:
-    coin: str
-    side: Optional[str]
-    size: float
-    limit_px: Optional[float]
-    timestamp: Optional[int]
-    raw: Dict[str, Any]
+    """普通订单（限价/市价单）"""
+    coin: str  # 交易币种
+    side: Optional[str]  # 方向：'B'/'A' or 'buy'/'sell'
+    size: float  # 订单数量
+    limit_px: Optional[float]  # 限价（市价单时为 None）
+    timestamp: Optional[int]  # 时间戳
+    raw: Dict[str, Any]  # 原始数据字典
 
 @dataclass(frozen=True)
 class PositionTpsl:
     """内嵌到仓位对象里：按 entryPx + 方向归类后的 TP/SL"""
-    tp: Tuple[TriggerOrder, ...]
-    sl: Tuple[TriggerOrder, ...]
-    others: Tuple[TriggerOrder, ...]   # 同 coin 的触发单，但无法判定 TP/SL（缺价/缺entry等）
+    tp: Tuple[TriggerOrder, ...]  # 止盈单列表
+    sl: Tuple[TriggerOrder, ...]  # 止损单列表
+    others: Tuple[TriggerOrder, ...]  # 同 coin 的触发单，但无法判定 TP/SL（缺价/缺entry等）
 
 
 @dataclass(frozen=True)
 class PositionOrders:
     """你也可以不要 normal，只放 tpsl；我这里给全一点便于调试"""
-    tpsl: PositionTpsl
-    normal: Tuple[NormalOrder, ...]
+    tpsl: PositionTpsl  # 止盈止损订单信息
+    normal: Tuple[NormalOrder, ...]  # 普通订单列表
     raw_trigger: Tuple[TriggerOrder, ...]  # 未归类前同 coin 的全部 trigger 单（方便排查）
