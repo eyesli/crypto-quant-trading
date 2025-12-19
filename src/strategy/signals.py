@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
-from src.data.models import SignalSnapshot
 
 import pandas as pd
 
+from src.account.manager import position_stop_price
 from src.data.models import Decision, DirectionResult, PerpAssetInfo, Side, SignalSnapshot, \
     TriggerResult, ValidityResult, PerpPosition
 from src.tools.performance import measure_time
@@ -45,11 +45,11 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
     ext = (close - ema20) / ema20 if ema20 != 0 else 0.0  # + means above ema20
 
     # ---- Tunables（你后面可以放进 config） ----
-    min_slope = 0.0002         # 0.02%/bar：过滤走平假趋势（按品种可调）
-    ext_limit = 0.02           # 2%：开始认为"追高/追低风险上升"
-    ext_hard  = 0.035          # 3.5%：更重惩罚
-    ext_penalty_max = 0.15     # 最大扣分
-    slope_penalty = 0.12       # 走平扣分
+    min_slope = 0.0002  # 0.02%/bar：过滤走平假趋势（按品种可调）
+    ext_limit = 0.02  # 2%：开始认为"追高/追低风险上升"
+    ext_hard = 0.035  # 3.5%：更重惩罚
+    ext_penalty_max = 0.15  # 最大扣分
+    slope_penalty = 0.12  # 走平扣分
     pullback_slope_floor = -min_slope  # 回调区允许轻微走平，但不允许明显拐头
 
     # ---- 1) Structure decides side (宽容) ----
@@ -70,17 +70,17 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
             # slope bonus / penalty
             if slope_pct >= min_slope:
                 conf += 0.05
-                reasons.append(f"1h: Slope Up (+) {slope_pct*100:.3f}%")
+                reasons.append(f"1h: Slope Up (+) {slope_pct * 100:.3f}%")
             elif slope_pct < min_slope:
                 conf -= slope_penalty
-                reasons.append(f"1h: Slope too flat (-) {slope_pct*100:.3f}%<{min_slope*100:.3f}%")
+                reasons.append(f"1h: Slope too flat (-) {slope_pct * 100:.3f}%<{min_slope * 100:.3f}%")
 
             # extension penalty (anti-chase)
             if ext > ext_limit:
                 t = max(0.0, min(1.0, (ext - ext_limit) / max(1e-9, (ext_hard - ext_limit))))
                 pen = ext_penalty_max * t
                 conf -= pen
-                reasons.append(f"1h: Extension high (+{ext*100:.2f}%) -> -{pen:.2f}")
+                reasons.append(f"1h: Extension high (+{ext * 100:.2f}%) -> -{pen:.2f}")
 
         # B) Pullback：ema50 < close <= ema20
         elif close > ema50:
@@ -90,7 +90,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
             # 回调区：如果 slope 明显转负，降权
             if slope_pct < pullback_slope_floor:
                 conf -= 0.10
-                reasons.append(f"1h: Pullback but slope turning down ({slope_pct*100:.3f}%)")
+                reasons.append(f"1h: Pullback but slope turning down ({slope_pct * 100:.3f}%)")
 
         # C) Breakdown：close <= ema50（不立刻归零，给低置信度等待确认）
         else:
@@ -108,17 +108,17 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
 
             if slope_pct <= -min_slope:
                 conf += 0.05
-                reasons.append(f"1h: Slope Down (+) {slope_pct*100:.3f}%")
+                reasons.append(f"1h: Slope Down (+) {slope_pct * 100:.3f}%")
             elif slope_pct > -min_slope:
                 conf -= slope_penalty
-                reasons.append(f"1h: Slope too flat (-) {slope_pct*100:.3f}%>-{min_slope*100:.3f}%")
+                reasons.append(f"1h: Slope too flat (-) {slope_pct * 100:.3f}%>-{min_slope * 100:.3f}%")
 
             # extension penalty (anti-chase)
             if ext < -ext_limit:  # far below ema20
                 t = max(0.0, min(1.0, ((-ext) - ext_limit) / max(1e-9, (ext_hard - ext_limit))))
                 pen = ext_penalty_max * t
                 conf -= pen
-                reasons.append(f"1h: Extension high ({ext*100:.2f}%) -> -{pen:.2f}")
+                reasons.append(f"1h: Extension high ({ext * 100:.2f}%) -> -{pen:.2f}")
 
         # B) Pullback：ema50 > close >= ema20
         elif close < ema50:
@@ -127,7 +127,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
 
             if slope_pct > -pullback_slope_floor:  # 即 slope_pct > +min_slope
                 conf -= 0.10
-                reasons.append(f"1h: Pullback but slope turning up ({slope_pct*100:.3f}%)")
+                reasons.append(f"1h: Pullback but slope turning up ({slope_pct * 100:.3f}%)")
 
         # C) Breakdown：close >= ema50
         else:
@@ -178,44 +178,44 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
 
     # -------- 0) No bias -> no trigger --------
     if dir_res.side == Side.NONE:
-        return TriggerResult(False, None, 0.0, False,["no direction -> no trigger"])
+        return TriggerResult(False, None, 0.0, False, ["no direction -> no trigger"])
 
     # -------- 1) Guard --------
     need_cols = ("open", "high", "low", "close", "ema_20", "ema_50", "atr_14")
     for c in need_cols:
         if c not in df_15m.columns:
-            return TriggerResult(False, None, 0.0, False,[f"15m: missing {c}"])
+            return TriggerResult(False, None, 0.0, False, [f"15m: missing {c}"])
     if len(df_15m) < 3:
-        return TriggerResult(False, None, 0.0, False,["15m: insufficient bars (<3)"])
+        return TriggerResult(False, None, 0.0, False, ["15m: insufficient bars (<3)"])
 
     strict_entry = regime.strict_entry
 
     # -------- 2) Latest bar data --------
     open_ = float(df_15m["open"].iloc[-1])
     high = float(df_15m["high"].iloc[-1])
-    low  = float(df_15m["low"].iloc[-1])
+    low = float(df_15m["low"].iloc[-1])
     close = float(df_15m["close"].iloc[-1])
 
     prev_close = float(df_15m["close"].iloc[-2])
 
     ema20 = float(df_15m["ema_20"].iloc[-1])
     ema50 = float(df_15m["ema_50"].iloc[-1])
-    atr   = float(df_15m["atr_14"].iloc[-1])
+    atr = float(df_15m["atr_14"].iloc[-1])
 
     if atr <= 0:
-        return TriggerResult(False, None, 0.0, False,["15m: ATR invalid (<=0)"])
+        return TriggerResult(False, None, 0.0, False, ["15m: ATR invalid (<=0)"])
 
     # -------- 3) Tunables (建议后续放 config) --------
     N = 20
     breakout_pad = (0.20 * atr) if strict_entry else (0.05 * atr)
     pullback_band = (0.25 * atr) if strict_entry else (0.35 * atr)
 
-    ema_tangle_gap = 0.20 * atr          # strict 下：ema20/ema50 太近认为纠缠
-    min_breakout_natr = 0.005            # strict 下：低波动不追突破（0.5%）
+    ema_tangle_gap = 0.20 * atr  # strict 下：ema20/ema50 太近认为纠缠
+    min_breakout_natr = 0.005  # strict 下：低波动不追突破（0.5%）
 
     # -------- 4) Helpers / flags --------
     is_green = close > open_
-    is_red   = close < open_
+    is_red = close < open_
 
     in_bull_struct = (ema20 >= ema50)
     in_bear_struct = (ema20 <= ema50)
@@ -290,254 +290,173 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
         # 7.1 EMA 纠缠过滤（震荡不做）
         ema_gap = abs(ema20 - ema50)
         if ema_gap < ema_tangle_gap:
-            return TriggerResult(False, None, 0.0, False,reasons + ["strict: ema20/ema50 too tight -> reject"])
+            return TriggerResult(False, None, 0.0, False, reasons + ["strict: ema20/ema50 too tight -> reject"])
 
         # 7.2 突破低波动过滤（死鱼盘不追突破）
         if is_breakout:
             if (atr / close) < min_breakout_natr:
-                return TriggerResult(False, None, 0.0, False,reasons + ["strict: volatility too low for breakout -> reject"])
+                return TriggerResult(False, None, 0.0, False,
+                                     reasons + ["strict: volatility too low for breakout -> reject"])
 
-    return TriggerResult(entry_ok, entry_hint, strength, is_breakout,reasons)
+    return TriggerResult(entry_ok, entry_hint, strength, is_breakout, reasons)
 
 
 def compute_validity_and_risk(
-    df_15m: pd.DataFrame,
-    df_5m: Optional[pd.DataFrame],
-    dir_res: DirectionResult,
-    trg_res: TriggerResult,
-    regime: Decision,
-    asset_info: PerpAssetInfo,
-    position: Optional["PerpPosition"] = None
+        df_15m: pd.DataFrame,
+        df_5m: Optional[pd.DataFrame],
+        dir_res: DirectionResult,
+        trg_res: TriggerResult,
+        regime: Decision,
+        position: Optional["PerpPosition"] = None,
 ) -> ValidityResult:
-    """
-    实盘级 Validity & Risk（风险有效性层）
-    分两条路径：
-    - Flat（无仓位）：只在 trg_res.entry_ok 为 True 时，计算"开仓止损 + 入场质量"
-    - In-Position（有仓位）：无论 trg_res.entry_ok 是否 True，都计算"退出/反手/追踪止损"
-    """
     reasons: List[str] = []
 
-    # --- 基础校验 ---
     if df_15m is None or len(df_15m) < 30:
         return ValidityResult(None, False, False, 0.0, ["15m: insufficient bars"])
 
-    strict = regime.strict_entry
+    strict = bool(regime.strict_entry)
 
-    # 最近一根
     close15 = float(df_15m["close"].iloc[-1])
-    high15  = float(df_15m["high"].iloc[-1])
-    low15   = float(df_15m["low"].iloc[-1])
-
     ema20_15 = float(df_15m["ema_20"].iloc[-1])
     ema50_15 = float(df_15m["ema_50"].iloc[-1])
-    atr15    = float(df_15m["atr_14"].iloc[-1])
-
+    atr15 = float(df_15m["atr_14"].iloc[-1])
     if atr15 <= 0:
         return ValidityResult(None, False, False, 0.0, ["15m: ATR invalid (<=0)"])
 
-    # 是否有仓位（持仓管理路径）
-    has_pos = bool(position is not None)
+    # ✅ 有仓位：必须 position != None 且 szi != 0
+    has_pos = bool(position is not None and (position.szi is not None) and abs(position.szi) > 0)
 
     # ----------------------------------------------------------------------
-    # A) FLAT：没有仓位
+    # A) FLAT
     # ----------------------------------------------------------------------
     if not has_pos:
-        # 没触发入场就不算"开仓止损/质量"（省算力，也避免 reasons 污染）
         if not trg_res.entry_ok:
             return ValidityResult(None, False, False, 0.0, ["flat: no entry -> skip validity"])
-
-        # 没方向也不做
         if dir_res.side is None or dir_res.side == Side.NONE:
             return ValidityResult(None, False, False, 0.0, ["flat: no direction"])
 
-        # entry_ref：用触发给的入场参考价（突破/限价）更准确
         entry_ref = float(trg_res.entry_price_hint or close15)
 
-        # --- 1) 初始止损：ATR + 结构（按触发类型分开） ---
         k_atr = 1.25 if strict else 1.55
         atr_dist = k_atr * atr15
 
-        # 判断是否为突破类型
-        is_breakout = False
-        if trg_res.is_breakout is not None:
-            is_breakout = trg_res.is_breakout
+        # is_breakout：优先字段，否则从 reasons 推断
+        if getattr(trg_res, "is_breakout", None) is not None:
+            is_breakout = bool(trg_res.is_breakout)
         else:
-            # 从 reasons 判断
-            rs = " ".join(trg_res.reasons).lower()
+            rs = " ".join(getattr(trg_res, "reasons", [])).lower()
             is_breakout = ("breakout" in rs) or ("breakdown" in rs)
 
-        # swing（近 10 根）
         N = 10
-        swing_low  = float(df_15m["low"].iloc[-N:].min())
+        swing_low = float(df_15m["low"].iloc[-N:].min())
         swing_high = float(df_15m["high"].iloc[-N:].max())
 
-        # 对不同触发类型设置结构止损
         if dir_res.side == Side.LONG:
             atr_sl = entry_ref - atr_dist
-
             if is_breakout:
                 breakout_level = float(trg_res.entry_price_hint or entry_ref)
                 struct_sl = max(breakout_level - 0.25 * atr15, ema20_15 - 0.25 * atr15)
-                reasons.append("stop: breakout long -> invalidation below breakout/ema20")
             else:
                 struct_sl = swing_low - 0.10 * atr15
-                reasons.append("stop: pullback long -> below swing low")
-
             stop_price = max(atr_sl, struct_sl)
-            reasons.append(f"stop_price(long): max(atr={atr_sl:.2f}, struct={struct_sl:.2f}) -> {stop_price:.2f}")
-
-        else:  # SHORT
+        else:
             atr_sl = entry_ref + atr_dist
-
             if is_breakout:
                 breakout_level = float(trg_res.entry_price_hint or entry_ref)
                 struct_sl = min(breakout_level + 0.25 * atr15, ema20_15 + 0.25 * atr15)
-                reasons.append("stop: breakout short -> invalidation above breakout/ema20")
             else:
                 struct_sl = swing_high + 0.10 * atr15
-                reasons.append("stop: pullback short -> above swing high")
-
             stop_price = min(atr_sl, struct_sl)
-            reasons.append(f"stop_price(short): min(atr={atr_sl:.2f}, struct={struct_sl:.2f}) -> {stop_price:.2f}")
 
-        # --- 2) 入场质量：5m adverse drift（触发后立刻走坏就降权/strict veto） ---
-        quality = 0.70  # baseline 更像实盘
+        quality = 0.70
         if df_5m is not None and len(df_5m) >= 6 and "atr_14" in df_5m.columns:
             last = df_5m.iloc[-3:]
             drift = float(last["close"].iloc[-1] - last["close"].iloc[0])
             atr5 = float(df_5m["atr_14"].iloc[-1])
-
             if atr5 > 0:
                 if dir_res.side == Side.LONG and drift < -0.35 * atr5:
                     quality -= 0.30
-                    reasons.append("5m: adverse drift vs long -> quality down")
                 elif dir_res.side == Side.SHORT and drift > 0.35 * atr5:
                     quality -= 0.30
-                    reasons.append("5m: adverse drift vs short -> quality down")
 
-        # strict 下：如果质量太差，可以直接否决入场（更实盘）
         if strict and quality < 0.45:
             reasons.append("strict: quality too low -> veto entry")
 
         quality = max(0.0, min(1.0, quality))
-        # flat 时：不做 exit/flip（因为没有仓）
         return ValidityResult(stop_price, False, False, quality, reasons)
 
     # ----------------------------------------------------------------------
-    # B) IN-POSITION：有仓位（持仓管理）
+    # B) IN-POSITION
     # ----------------------------------------------------------------------
+    assert position is not None
     pos_side = position.side_enum
-    entry_px = float(position.entry_px)
+    entry_px = float(position.entry_px or 0.0)
 
-    # --- 1) 追踪止损（Trailing Stop）：用 15m ATR/EMA 做一个稳健版本 ---
     k_trail = 1.10 if strict else 1.35
     trail_dist = k_trail * atr15
 
-    # 追踪参考：用 EMA20 附近更贴趋势（也可以换成最近 swing）
+    # ✅ 旧 stop 从“内嵌 SL 触发单”读
+    old_stop = position_stop_price(position)
+
     if pos_side == Side.LONG:
         cand1 = ema20_15 - 0.25 * atr15
         cand2 = close15 - trail_dist
         new_stop = max(cand1, cand2)
-
-        # 保证只上移
-        if position.stop_price is not None:
-            stop_price = max(float(position.stop_price), new_stop)
-        else:
-            stop_price = min(entry_px - 1.55 * atr15, new_stop)
-        reasons.append(f"trail_stop(long): max(ema20-0.25atr={cand1:.2f}, close-katr={cand2:.2f}) -> {stop_price:.2f}")
-
-    else:  # SHORT
+        stop_price = max(old_stop, new_stop) if old_stop is not None else new_stop
+    else:
         cand1 = ema20_15 + 0.25 * atr15
         cand2 = close15 + trail_dist
         new_stop = min(cand1, cand2)
+        stop_price = min(old_stop, new_stop) if old_stop is not None else new_stop
 
-        if position.stop_price is not None:
-            stop_price = min(float(position.stop_price), new_stop)
-        else:
-            stop_price = max(entry_px + 1.55 * atr15, new_stop)
-        reasons.append(f"trail_stop(short): min(ema20+0.25atr={cand1:.2f}, close+katr={cand2:.2f}) -> {stop_price:.2f}")
-
-    # --- 2) exit_ok：结构破坏优先，EMA 反穿兜底 ---
     exit_ok = False
-
-    # 结构破坏：用近 10 根 swing 做"破结构"
     N = 10
-    swing_low  = float(df_15m["low"].iloc[-N:].min())
+    swing_low = float(df_15m["low"].iloc[-N:].min())
     swing_high = float(df_15m["high"].iloc[-N:].max())
 
     if pos_side == Side.LONG:
-        # 结构破坏：收盘跌破近 N 根 swing_low（可以加一点 pad）
-        if close15 < (swing_low - 0.05 * atr15):
-            exit_ok = True
-            reasons.append("exit: long structure broken (close < recent swing_low)")
+        if close15 < (swing_low - 0.05 * atr15): exit_ok = True
+        if ema20_15 < ema50_15: exit_ok = True
+        if close15 <= stop_price: exit_ok = True
+    else:
+        if close15 > (swing_high + 0.05 * atr15): exit_ok = True
+        if ema20_15 > ema50_15: exit_ok = True
+        if close15 >= stop_price: exit_ok = True
 
-        # EMA 兜底：ema20 跌破 ema50
-        if ema20_15 < ema50_15:
-            exit_ok = True
-            reasons.append("exit: long ema20 crossed below ema50")
-
-        # 硬止损触发也可在 executor 层做，这里也可以提示
-        if close15 <= stop_price:
-            exit_ok = True
-            reasons.append("exit: price <= stop_price")
-
-    else:  # SHORT
-        if close15 > (swing_high + 0.05 * atr15):
-            exit_ok = True
-            reasons.append("exit: short structure broken (close > recent swing_high)")
-
-        if ema20_15 > ema50_15:
-            exit_ok = True
-            reasons.append("exit: short ema20 crossed above ema50")
-
-        if close15 >= stop_price:
-            exit_ok = True
-            reasons.append("exit: price >= stop_price")
-
-    # --- 3) flip_ok：严格条件（默认只在 strict 或极强证据下允许） ---
     flip_ok = False
-    allow_flip = regime.allow_flip
+    allow_flip = bool(getattr(regime, "allow_flip", False))
     if strict or allow_flip:
-        # 简化：用 15m 的结构 + close-confirmed 反向突破当作 flip 触发
         win_len = min(20, len(df_15m) - 1)
         window = df_15m.iloc[-(win_len + 1):-1]
         hh = float(window["high"].max())
         ll = float(window["low"].min())
-        pad = (0.15 * atr15)
-
+        pad = 0.15 * atr15
         prev_close = float(df_15m["close"].iloc[-2])
 
         if pos_side == Side.LONG:
-            # 想 flip 成 SHORT：必须 exit_ok 且反向结构（ema20<=ema50）且下破 LL（事件触发）
             if exit_ok and (ema20_15 <= ema50_15) and (prev_close > (ll - pad)) and (close15 <= (ll - pad)):
                 flip_ok = True
-                reasons.append("flip: long->short (exit + bear structure + breakdown event)")
-
-        else:  # SHORT
+        else:
             if exit_ok and (ema20_15 >= ema50_15) and (prev_close < (hh + pad)) and (close15 >= (hh + pad)):
                 flip_ok = True
-                reasons.append("flip: short->long (exit + bull structure + breakout event)")
 
-    # --- 4) quality：持仓管理质量（可用于加仓/减仓决策） ---
     quality = 0.65
     if df_5m is not None and len(df_5m) >= 6 and "atr_14" in df_5m.columns:
         last = df_5m.iloc[-3:]
         drift = float(last["close"].iloc[-1] - last["close"].iloc[0])
         atr5 = float(df_5m["atr_14"].iloc[-1])
-
         if atr5 > 0:
             if pos_side == Side.LONG and drift < -0.40 * atr5:
                 quality -= 0.20
-                reasons.append("5m: adverse drift vs long position")
             elif pos_side == Side.SHORT and drift > 0.40 * atr5:
                 quality -= 0.20
-                reasons.append("5m: adverse drift vs short position")
 
     quality = max(0.0, min(1.0, quality))
     return ValidityResult(stop_price, exit_ok, flip_ok, quality, reasons)
 
 
-def score_signal(dir_res: DirectionResult, trg_res: TriggerResult, val_res: ValidityResult, regime: Decision) -> Tuple[float, List[str]]:
+def score_signal(dir_res: DirectionResult, trg_res: TriggerResult, val_res: ValidityResult, regime: Decision) -> Tuple[
+    float, List[str]]:
     """
     打分：Direction(40) + Trigger(40) + Quality(20)
     """
@@ -566,19 +485,19 @@ def score_signal(dir_res: DirectionResult, trg_res: TriggerResult, val_res: Vali
 
 @measure_time
 def build_signal(
-    df_1h: pd.DataFrame,
-    df_15m: pd.DataFrame,
-    df_5m: pd.DataFrame,
-    regime: Decision,
-    asset_info: PerpAssetInfo,
-    position: Optional["PerpPosition"],
-    now_ts: float
+        df_1h: pd.DataFrame,
+        df_15m: pd.DataFrame,
+        df_5m: pd.DataFrame,
+        regime: Decision,
+        asset_info: PerpAssetInfo,
+        position: Optional["PerpPosition"],
+        now_ts: float
 ) -> SignalSnapshot:
     """构建完整的交易信号"""
 
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)
-    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info,position)
+    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, position)
 
     score, reasons = score_signal(dir_res, trg_res, val_res, regime)
     entry_threshold = 80.0 if regime.strict_entry else 70.0

@@ -178,4 +178,28 @@ def embed_orders_into_positions(
 
     return enriched
 
+from typing import Optional, List
+
+def order_ref_price(o: "TriggerOrder") -> Optional[float]:
+    return o.trigger_px if o.trigger_px is not None else o.limit_px
+
+def position_stop_price(pos: "PerpPosition") -> Optional[float]:
+    """从内嵌 tpsl.sl 里取当前有效止损价（最紧的那条）"""
+    if pos.orders is None or pos.orders.tpsl is None:
+        return None
+    sl_orders = pos.orders.tpsl.sl or ()
+    prices: List[float] = []
+    for o in sl_orders:
+        px = order_ref_price(o)
+        if px is not None:
+            prices.append(float(px))
+    if not prices:
+        return None
+
+    if pos.side_enum == Side.LONG:
+        return max(prices)   # 多单：最紧止损=最高那条
+    if pos.side_enum == Side.SHORT:
+        return min(prices)   # 空单：最紧止损=最低那条
+    return None
+
 
