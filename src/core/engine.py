@@ -39,7 +39,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     - 策略生成 TradePlan
     - 执行器（可 DRY_RUN）
     """
-    account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"))
+    account_overview = fetch_account_overview(exchange.info,SYMBOL, os.environ.get("HL_WALLET_ADDRESS"))
 
     df_1h = ohlcv_to_df(hl_candles_to_ohlcv_list(
         candles_last_n_closed(exchange.info, SYMBOL, "1h", limit=500)
@@ -81,7 +81,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         df_5m=indicators_5m,
         regime=regime,
         asset_info=asset_info,
-        position=account_overview.positions,
+        position=account_overview.primary_position,
         now_ts=now_ts
     )
 

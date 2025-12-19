@@ -615,5 +615,6 @@ class AccountOverview:
     """
     state: AccountState
     positions: List[PerpPosition]
+    primary_position: Optional[PerpPosition]
     open_orders: List[Dict[str, Any]]   # 这里先保留 dict（因为订单结构更复杂/变化更多）
     raw_user_state: Dict[str, Any]

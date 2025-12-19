@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable
 
 from hyperliquid.info import Info
 
@@ -152,7 +152,7 @@ def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
 
 '''
 @measure_time
-def fetch_account_overview(info: Info, address: str) -> AccountOverview:
+def fetch_account_overview(info: Info, address: str,primary_symbol: Optional[str] = None,) -> AccountOverview:
     """
     返回强类型：
     - AccountState（权益/保证金/时间戳/可提）
@@ -177,12 +177,17 @@ def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     # --- positions ---
     asset_positions = us.get("assetPositions") or []
     positions: List[PerpPosition] = []
+    primary_position: Optional[PerpPosition] = None
     for ap in asset_positions:
         pos_dict = ap.get("position")
         coin = pos_dict.get("coin")
         if not coin:
             continue
-        positions.append(PerpPosition.from_dict(pos_dict))
+        pos = PerpPosition.from_dict(pos_dict)
+        positions.append(pos)
+
+        if primary_symbol is not None and coin == primary_symbol:
+            primary_position = pos
 
     # --- orders ---
     print("📌 正在获取挂单(open_orders)...")
@@ -205,5 +210,6 @@ def fetch_account_overview(info: Info, address: str) -> AccountOverview:
         state=state,
         positions=positions,
         open_orders=frontend_open_orders,
+        primary_position=primary_position,
         raw_user_state=us,
     )

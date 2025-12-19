@@ -26,18 +26,5 @@ def account_total_usdc(account: AccountOverview) -> float:
         return 0.0
 
 
-def find_position(account: AccountOverview, symbol: str) -> Optional[PerpPosition]:
-    """
-    symbol: "BTC"/"ETH"/"SOL"（与你 PerpPosition.coin 对齐）
-    返回：该币种的 PerpPosition（若无仓位或找不到则 None）
-    """
-    for p in account.positions:
-        if p.coin != symbol:
-            continue
-        szi = float(p.szi or 0.0)
-        if szi != 0.0:
-            return p
-    return None
-
 
 #

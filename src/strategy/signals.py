@@ -306,7 +306,7 @@ def compute_validity_and_risk(
     trg_res: TriggerResult,
     regime: Decision,
     asset_info: PerpAssetInfo,
-    position: List[PerpPosition]
+    position: "PerpPosition"
 ) -> ValidityResult:
     """
     实盘级 Validity & Risk（风险有效性层）
@@ -335,7 +335,7 @@ def compute_validity_and_risk(
         return ValidityResult(None, False, False, 0.0, ["15m: ATR invalid (<=0)"])
 
     # 是否有仓位（持仓管理路径）
-    has_pos = len(position) > 0
+    has_pos = bool(position is None)
 
     # ----------------------------------------------------------------------
     # A) FLAT：没有仓位
@@ -420,7 +420,7 @@ def compute_validity_and_risk(
     # ----------------------------------------------------------------------
     # B) IN-POSITION：有仓位（持仓管理）
     # ----------------------------------------------------------------------
-    pos_side = position.side
+    pos_side = position.side_enum
     entry_px = float(position.entry_price)
 
     # --- 1) 追踪止损（Trailing Stop）：用 15m ATR/EMA 做一个稳健版本 ---
@@ -565,7 +565,7 @@ def build_signal(
     df_5m: pd.DataFrame,
     regime: Decision,
     asset_info: PerpAssetInfo,
-    position: List[PerpPosition],
+    position: "PerpPosition",
     now_ts: float
 ) -> SignalSnapshot:
     """构建完整的交易信号"""
