@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from hyperliquid.info import Info
 
-from src.data.models import AccountOverview
+from src.data.models import AccountOverview, AccountState, MarginSummary, PerpPosition
 from src.tools.performance import measure_time
 
 
@@ -154,139 +154,63 @@ def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
 @measure_time
 def fetch_account_overview(info: Info, address: str) -> AccountOverview:
     """
-    用官方 SDK 的 Info 接口获取：
-    - 账户权益/保证金
-    - 永续仓位
-    - 挂单（含止盈止损触发单）
-    并打印类似你原 ccxt 版本的输出。
+    返回强类型：
+    - AccountState（权益/保证金/时间戳/可提）
+    - List[PerpPosition]（永续仓位）
+    - open_orders（暂保留 dict）
     """
-    try:
-        print("\n💼 正在获取账户状态...")
-        us = info.user_state(address)  # Dict
+    print("\n💼 正在获取账户状态...")
+    us: Dict[str, Any] = info.user_state(address) or {}
 
-        # ===== 余额/权益（USDC 维度）=====
-        # Hyperliquid perp 的“权益”主要在 marginSummary / withdrawable 等字段里
-        margin = us.get("marginSummary") or {}
-        total_usdc = _to_float(margin.get("accountValue"))
-        used_usdc  = _to_float(margin.get("totalMarginUsed"))
-        free_usdc  = _to_float(us.get("withdrawable"))
+    # --- summary ---
+    cross_margin_summary = MarginSummary.from_dict(us.get("crossMarginSummary"))
+    margin_summary = MarginSummary.from_dict(us.get("marginSummary"))
 
-        print("💰 账户余额概览")
-        print(f"总权益:      {total_usdc if total_usdc is not None else '-'} USDC")
-        print(f"可用余额:    {free_usdc if free_usdc is not None else '-'} USDC")
-        print(f"已用保证金:  {used_usdc if used_usdc is not None else '-'} USDC")
-        print("=" * 60 + "\n")
+    state = AccountState(
+        time_ms=int(us["time"]) if isinstance(us.get("time"), (int, float)) else None,
+        withdrawable=_to_float(us.get("withdrawable")),
+        cross_maintenance_margin_used=_to_float(us.get("crossMaintenanceMarginUsed")),
+        cross_margin_summary=cross_margin_summary,
+        margin_summary=margin_summary,
+    )
 
-        # ===== 仓位（永续）=====
-        # 常见字段：assetPositions -> [{ position: {...}, type: "oneWay" }]
-        asset_positions = us.get("assetPositions") or []
-        positions: List[Dict[str, Any]] = []
-        for ap in asset_positions:
-            pos = ap.get("position") or ap
-            if isinstance(pos, dict):
-                positions.append(pos)
+    # --- positions ---
+    asset_positions = us.get("assetPositions") or []
+    positions: List[PerpPosition] = []
+    for ap in asset_positions:
+        # 兼容：ap 可能是 {type, position:{...}} 或直接就是 position dict
+        pos_dict = ap.get("position") if isinstance(ap, dict) else None
+        pos_dict = pos_dict if isinstance(pos_dict, dict) else (ap if isinstance(ap, dict) else None)
+        if not isinstance(pos_dict, dict):
+            continue
 
-        print("📌 正在获取挂单(open_orders)...")
-        frontend_open_orders = info.frontend_open_orders(address) or []
+        # coin 必须有，否则跳过
+        coin = pos_dict.get("coin") or pos_dict.get("symbol") or pos_dict.get("asset")
+        if not coin:
+            continue
 
-        if not positions:
-            print("⚪ 当前无任何永续仓位。\n")
-        else:
-            print("\n" + "=" * 80)
-            print("📊 当前持仓详情 (含止盈止损状态)")
-            print("=" * 80)
+        positions.append(PerpPosition.from_dict(pos_dict))
 
-            for pos in positions:
-                # 你原来 ccxt 的字段，这里做“尽量映射”
-                coin = pos.get("coin") or pos.get("symbol") or pos.get("asset")
-                szi  = _to_float(pos.get("szi") or pos.get("size") or pos.get("contracts"))
-                entry_price = _to_float(pos.get("entryPx") or pos.get("entryPrice"))
-                liq_price   = _to_float(pos.get("liquidationPx") or pos.get("liquidationPrice"))
-                upnl        = _to_float(pos.get("unrealizedPnl") or pos.get("upnl"))
-                leverage    = _to_float(pos.get("leverage"))
-                notional    = _to_float(pos.get("positionValue") or pos.get("notional"))
-                roe         = _to_float(pos.get("returnOnEquity") or pos.get("roe") or pos.get("percentage"))
+    # --- orders ---
+    print("📌 正在获取挂单(open_orders)...")
+    frontend_open_orders = info.frontend_open_orders(address) or []
+    if not isinstance(frontend_open_orders, list):
+        frontend_open_orders = []
 
-                # side：Hyperliquid 常用 szi 正负表示方向
-                side = None
-                if szi is not None:
-                    side = "long" if szi > 0 else ("short" if szi < 0 else None)
+    # ---（可选）保持你原来的打印行为，但不要影响返回强类型 ---
+    print("💰 账户余额概览")
+    total_usdc = state.margin_summary.account_value
+    used_usdc = state.margin_summary.total_margin_used
+    free_usdc = state.withdrawable
 
-                # ===== 匹配 TP/SL（用方向 + 入场价判断）=====
-                tp_orders: List[float] = []
-                sl_orders: List[float] = []
+    print(f"总权益:      {total_usdc if total_usdc is not None else '-'} USDC")
+    print(f"可用余额:    {free_usdc if free_usdc is not None else '-'} USDC")
+    print(f"已用保证金:  {used_usdc if used_usdc is not None else '-'} USDC")
+    print("=" * 60 + "\n")
 
-                if entry_price is not None and side is not None:
-                    for o in frontend_open_orders:
-                        o_coin = o.get("coin") or o.get("symbol") or o.get("asset")
-                        if o_coin != coin:
-                            continue
-
-                        # Hyperliquid order side 常见是 "B"/"A" 或 "buy"/"sell"
-                        o_side = o.get("side") or o.get("dir")
-                        # 多单平仓期望卖；空单平仓期望买
-                        expected = "sell" if side == "long" else "buy"
-
-                        def _norm_side(x):
-                            if x is None: return None
-                            x = str(x).lower()
-                            if x in ("b", "buy", "long"): return "buy"
-                            if x in ("a", "sell", "short"): return "sell"
-                            return x
-
-                        if _norm_side(o_side) != expected:
-                            continue
-
-                        trig = _extract_trigger_price(o)
-                        px   = _to_float(o.get("limitPx") or o.get("price"))
-                        check_price = trig if trig is not None else px
-                        if check_price is None:
-                            continue
-
-                        if side == "long":
-                            (tp_orders if check_price > entry_price else sl_orders).append(check_price)
-                        else:  # short
-                            (tp_orders if check_price < entry_price else sl_orders).append(check_price)
-
-                # ===== 打印 =====
-                print(f"🪙  交易对:     {coin or '-'}")
-                print(f"    方向:         {side.upper() if side else '-'} -- {leverage if leverage is not None else '-'} 倍")
-
-                if szi is not None:
-                    print(f"    仓位数量:     {abs(szi)}")
-                if notional is not None:
-                    print(f"    名义价值:     {notional} USDC")
-                if entry_price is not None:
-                    print(f"    开仓均价:     {entry_price:.2f}")
-
-                if upnl is not None:
-                    print(f"    未实现盈亏:   {upnl} USDC")
-                if roe is not None:
-                    print(f"    收益率(ROE):  {roe:.2f}%")
-                if liq_price is not None:
-                    print(f"    预估强平价:   {liq_price:.2f}")
-
-                print(f"    {'-' * 30}")
-                if tp_orders:
-                    tp_str = ", ".join([f"${p:.2f}" for p in sorted(tp_orders)])
-                    print(f"    🎯 止盈挂单:   {tp_str}")
-                else:
-                    print(f"    🎯 止盈挂单:   -- 未设置 --")
-
-                if sl_orders:
-                    sl_str = ", ".join([f"${p:.2f}" for p in sorted(sl_orders)])
-                    print(f"    🛡️ 止损挂单:   {sl_str}")
-                else:
-                    print(f"    🛡️ 止损挂单:   -- 未设置 --")
-
-            print("=" * 80 + "\n")
-
-        return AccountOverview(
-            raw_user_state=us,
-            positions=positions,
-            open_orders=frontend_open_orders,
-        )
-
-    except Exception as e:
-        print(f"❌ 获取账户信息时发生未知错误: {e}")
-        raise
+    return AccountOverview(
+        state=state,
+        positions=positions,
+        open_orders=frontend_open_orders,
+        raw_user_state=us,
+    )

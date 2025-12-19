@@ -459,3 +459,152 @@ class TradePlan:
     post_only: bool
 
     reasons: List[str]
+
+
+
+# ===== 基础工具：尽量宽容地转 float =====
+def _to_float(x: Any) -> Optional[float]:
+    if x is None:
+        return None
+    try:
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if s == "":
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+@dataclass(frozen=True)
+class CumFunding:
+    all_time: Optional[float]
+    since_change: Optional[float]
+    since_open: Optional[float]
+
+    @staticmethod
+    def from_dict(d: Optional[Dict[str, Any]]) -> "CumFunding":
+        d = d or {}
+        return CumFunding(
+            all_time=_to_float(d.get("allTime")),
+            since_change=_to_float(d.get("sinceChange")),
+            since_open=_to_float(d.get("sinceOpen")),
+        )
+
+
+@dataclass(frozen=True)
+class LeverageInfo:
+    type: Optional[Literal["cross", "isolated"]]
+    value: Optional[float]
+
+    @staticmethod
+    def from_any(v: Any) -> "LeverageInfo":
+        """
+        Hyperliquid 有时是 {"type":"cross","value":24}
+        你旧逻辑里也可能直接是数字 / 字符串
+        """
+        if isinstance(v, dict):
+            t = v.get("type")
+            t = t if t in ("cross", "isolated") else None
+            return LeverageInfo(type=t, value=_to_float(v.get("value")))
+        # fallback：把它当作 value
+        return LeverageInfo(type=None, value=_to_float(v))
+
+
+@dataclass(frozen=True)
+class PerpPosition:
+    coin: str
+
+    # funding
+    cum_funding: CumFunding
+
+    # entry / liq / margin
+    entry_px: Optional[float]
+    liquidation_px: Optional[float]
+    margin_used: Optional[float]
+    max_leverage: Optional[float]
+
+    # size / exposure / pnl
+    szi: Optional[float]                 # 正多负空
+    position_value: Optional[float]      # 名义价值 USDC
+    unrealized_pnl: Optional[float]
+    return_on_equity: Optional[float]    # 这里先按原字段解析（注意：可能是比例不是百分比）
+
+    # leverage
+    leverage: LeverageInfo
+
+    # 额外：保留原始 dict，方便你以后加字段（比如 markPx, pnl, etc.）
+    raw: Dict[str, Any]
+
+    @property
+    def side(self) -> Optional[Literal["long", "short"]]:
+        if self.szi is None:
+            return None
+        if self.szi > 0:
+            return "long"
+        if self.szi < 0:
+            return "short"
+        return None
+
+    @property
+    def abs_size(self) -> Optional[float]:
+        return abs(self.szi) if self.szi is not None else None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "PerpPosition":
+        coin = d.get("coin") or d.get("symbol") or d.get("asset") or ""
+        coin = str(coin)
+
+        return PerpPosition(
+            coin=coin,
+            cum_funding=CumFunding.from_dict(d.get("cumFunding")),
+            entry_px=_to_float(d.get("entryPx") or d.get("entryPrice")),
+            liquidation_px=_to_float(d.get("liquidationPx") or d.get("liquidationPrice")),
+            margin_used=_to_float(d.get("marginUsed")),
+            max_leverage=_to_float(d.get("maxLeverage")),
+            szi=_to_float(d.get("szi") or d.get("size") or d.get("contracts")),
+            position_value=_to_float(d.get("positionValue") or d.get("notional")),
+            unrealized_pnl=_to_float(d.get("unrealizedPnl") or d.get("upnl")),
+            return_on_equity=_to_float(d.get("returnOnEquity") or d.get("roe") or d.get("percentage")),
+            leverage=LeverageInfo.from_any(d.get("leverage")),
+            raw=d,
+        )
+
+
+@dataclass(frozen=True)
+class MarginSummary:
+    account_value: Optional[float]
+    total_margin_used: Optional[float]
+    total_ntl_pos: Optional[float]
+    total_raw_usd: Optional[float]
+
+    @staticmethod
+    def from_dict(d: Optional[Dict[str, Any]]) -> "MarginSummary":
+        d = d or {}
+        return MarginSummary(
+            account_value=_to_float(d.get("accountValue")),
+            total_margin_used=_to_float(d.get("totalMarginUsed")),
+            total_ntl_pos=_to_float(d.get("totalNtlPos")),
+            total_raw_usd=_to_float(d.get("totalRawUsd")),
+        )
+
+
+@dataclass(frozen=True)
+class AccountState:
+    time_ms: Optional[int]
+    withdrawable: Optional[float]
+    cross_maintenance_margin_used: Optional[float]
+    cross_margin_summary: MarginSummary
+    margin_summary: MarginSummary
+
+
+@dataclass(frozen=True)
+class AccountOverview:
+    """
+    fetch_account_overview 的强类型返回值
+    """
+    state: AccountState
+    positions: List[PerpPosition]
+    open_orders: List[Dict[str, Any]]   # 这里先保留 dict（因为订单结构更复杂/变化更多）
+    raw_user_state: Dict[str, Any]

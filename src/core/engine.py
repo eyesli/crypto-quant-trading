@@ -14,7 +14,7 @@ from src.account.account import fetch_account_overview
 from src.data.fetcher import ohlcv_to_df, fetch_order_book_info, build_perp_asset_map
 from src.data.indicators import compute_technical_factors
 from src.data.analyzer import classify_trend_range, classify_timing_state
-from src.data.models import RegimeState, PerpAssetInfo, Decision
+from src.data.models import RegimeState, PerpAssetInfo, Decision, TimingState
 from src.strategy.regime import classify_vol_state, decide_regime
 from src.strategy.signals import build_signal
 from src.strategy.planner import signal_to_trade_plan
@@ -59,7 +59,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
     # 1h：环境/方向/权限
     base, adx = classify_trend_range(df=indicators_1h, prev=state.prev_base)
     vol_state, vol_dbg = classify_vol_state(indicators_1h)
-    timing = classify_timing_state(indicators_1h)
+    timing:TimingState = classify_timing_state(indicators_1h)
 
     order_book = fetch_order_book_info(exchange.info, SYMBOL)
     regime: Decision = decide_regime(
