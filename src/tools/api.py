@@ -1,4 +1,3 @@
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -8,7 +7,7 @@ import pytz
 from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.chat import (
-    ChatCompletionMessageParam, ChatCompletionUserMessageParam, ChatCompletionSystemMessageParam,
+    ChatCompletionUserMessageParam, ChatCompletionSystemMessageParam,
 )
 from openai.types.chat.completion_create_params import ResponseFormatJSONObject
 
