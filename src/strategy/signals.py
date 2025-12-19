@@ -39,9 +39,11 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
 
     # slope (safe)
     ema20_prev = float(df_1h["ema_20"].iloc[-2])
+    #算出 EMA20 这一小时比上一小时变动了多少比例
     slope_pct = (ema20 - ema20_prev) / ema20_prev if ema20_prev not in (0.0, None) else 0.0
 
     # extension (safe)
+    #现在的价格比 EMA20 均线贵（或便宜）了百分之多少？
     ext = (close - ema20) / ema20 if ema20 != 0 else 0.0  # + means above ema20
 
     # ---- Tunables（你后面可以放进 config） ----
@@ -106,6 +108,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
             conf = 0.60
             reasons.append("1h: Bear Momentum (close<ema20)")
 
+            #EMA20 斜率足够向下（<= -min_slope）→ 趋势确认，+0.05
             if slope_pct <= -min_slope:
                 conf += 0.05
                 reasons.append(f"1h: Slope Down (+) {slope_pct * 100:.3f}%")
@@ -114,6 +117,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
                 reasons.append(f"1h: Slope too flat (-) {slope_pct * 100:.3f}%>-{min_slope * 100:.3f}%")
 
             # extension penalty (anti-chase)
+            #当价格已经“远离 ema20 向下乖离”，你认为继续追空的性价比变差
             if ext < -ext_limit:  # far below ema20
                 t = max(0.0, min(1.0, ((-ext) - ext_limit) / max(1e-9, (ext_hard - ext_limit))))
                 pen = ext_penalty_max * t
@@ -125,6 +129,7 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
             conf = 0.48
             reasons.append("1h: Bear Pullback (ema50>close>=ema20)")
 
+            #EMA20 的下行斜率已经明显变弱甚至接近走平/上拐，那更像“空头衰竭 / 反转前夜”
             if slope_pct > -pullback_slope_floor:  # 即 slope_pct > +min_slope
                 conf -= 0.10
                 reasons.append(f"1h: Pullback but slope turning up ({slope_pct * 100:.3f}%)")

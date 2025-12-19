@@ -420,7 +420,7 @@ class Side(str, Enum):
     LONG = "LONG"  # 做多
     SHORT = "SHORT"  # 做空
     # FLAT = "FLAT"  # 明确的空仓信号
-    NONE = "NONE"  # 无方向
+    NONE = "NONE"  # 无方向 结构方向存在，但当前价格位置 / 动能 / 波动 / 环境不支持高性价比入场，因此选择观望
 
 @dataclass
 class DirectionResult:
