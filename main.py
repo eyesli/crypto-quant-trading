@@ -25,7 +25,7 @@ def main() -> None:
                 wallet=Account.from_key(os.environ.get("HL_PRIVATE_KEY")),
                 base_url=MAINNET_API_URL,
                 account_address=os.environ.get("HL_WALLET_ADDRESS"),
-                timeout=10.0,
+                timeout=20.0,
             )
             state = RegimeState()
             start_trade(exchange, state)
