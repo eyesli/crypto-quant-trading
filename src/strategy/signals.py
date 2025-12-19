@@ -8,7 +8,8 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from src.data.models import Decision, DirectionResult, PerpAssetInfo, PositionState, Side, SignalSnapshot, TriggerResult, ValidityResult
+from src.data.models import Decision, DirectionResult, PerpAssetInfo, Side, SignalSnapshot, \
+    TriggerResult, ValidityResult, PerpPosition
 from src.tools.performance import measure_time
 
 
@@ -176,15 +177,15 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
 
     # -------- 0) No bias -> no trigger --------
     if dir_res.side == Side.NONE:
-        return TriggerResult(False, None, 0.0, ["no direction -> no trigger"])
+        return TriggerResult(False, None, 0.0, False,["no direction -> no trigger"])
 
     # -------- 1) Guard --------
     need_cols = ("open", "high", "low", "close", "ema_20", "ema_50", "atr_14")
     for c in need_cols:
         if c not in df_15m.columns:
-            return TriggerResult(False, None, 0.0, [f"15m: missing {c}"])
+            return TriggerResult(False, None, 0.0, False,[f"15m: missing {c}"])
     if len(df_15m) < 3:
-        return TriggerResult(False, None, 0.0, ["15m: insufficient bars (<3)"])
+        return TriggerResult(False, None, 0.0, False,["15m: insufficient bars (<3)"])
 
     strict_entry = regime.strict_entry
 
@@ -201,7 +202,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
     atr   = float(df_15m["atr_14"].iloc[-1])
 
     if atr <= 0:
-        return TriggerResult(False, None, 0.0, ["15m: ATR invalid (<=0)"])
+        return TriggerResult(False, None, 0.0, False,["15m: ATR invalid (<=0)"])
 
     # -------- 3) Tunables (建议后续放 config) --------
     N = 20
@@ -288,7 +289,7 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
         # 7.1 EMA 纠缠过滤（震荡不做）
         ema_gap = abs(ema20 - ema50)
         if ema_gap < ema_tangle_gap:
-            return TriggerResult(False, None, 0.0, reasons + ["strict: ema20/ema50 too tight -> reject"])
+            return TriggerResult(False, None, 0.0, False,reasons + ["strict: ema20/ema50 too tight -> reject"])
 
         # 7.2 突破低波动过滤（死鱼盘不追突破）
         if is_breakout:
@@ -305,7 +306,7 @@ def compute_validity_and_risk(
     trg_res: TriggerResult,
     regime: Decision,
     asset_info: PerpAssetInfo,
-    position: Optional[PositionState] = None,
+    position: List[PerpPosition]
 ) -> ValidityResult:
     """
     实盘级 Validity & Risk（风险有效性层）
@@ -334,7 +335,7 @@ def compute_validity_and_risk(
         return ValidityResult(None, False, False, 0.0, ["15m: ATR invalid (<=0)"])
 
     # 是否有仓位（持仓管理路径）
-    has_pos = bool(position and position.size > 0)
+    has_pos = len(position) > 0
 
     # ----------------------------------------------------------------------
     # A) FLAT：没有仓位
@@ -564,6 +565,7 @@ def build_signal(
     df_5m: pd.DataFrame,
     regime: Decision,
     asset_info: PerpAssetInfo,
+    position: List[PerpPosition],
     now_ts: float
 ) -> SignalSnapshot:
     """构建完整的交易信号"""
@@ -571,7 +573,7 @@ def build_signal(
 
     dir_res = compute_direction(df_1h, regime)
     trg_res = compute_trigger(df_15m, dir_res, regime)
-    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info)
+    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, asset_info,position)
 
     score, reasons = score_signal(dir_res, trg_res, val_res, regime)
     entry_threshold = 80.0 if regime.strict_entry else 70.0

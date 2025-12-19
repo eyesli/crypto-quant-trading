@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from src.account.manager import find_position, position_to_state
+from src.account.manager import find_position
 from src.data.models import Decision, PerpAssetInfo, Side, SignalSnapshot, TradePlan, AccountOverview
 from src.tools.utils import estimate_qty_from_notional, max_notional_by_equity, round_qty_by_decimals
 
@@ -48,8 +48,7 @@ def signal_to_trade_plan(
     # 1) 仓位冲突：默认不加仓、不反手（你以后再加）
     pos_raw = find_position(account, symbol)
     if pos_raw:
-        pos = position_to_state(pos_raw)
-        if pos.size > 0 and pos.side == signal.side:
+        if  pos_raw.side_enum == signal.side:
             return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
                              ["existing same-side position -> skip"])
 

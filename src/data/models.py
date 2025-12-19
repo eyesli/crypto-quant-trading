@@ -400,7 +400,7 @@ from typing import List, Optional
 class Side(str, Enum):
     LONG = "LONG"
     SHORT = "SHORT"
-    FLAT = "FLAT"  # 明确的空仓信号
+    # FLAT = "FLAT"  # 明确的空仓信号
     NONE = "NONE"
 
 @dataclass
@@ -414,7 +414,7 @@ class TriggerResult:
     entry_ok: bool
     entry_price_hint: Optional[float]
     strength: float               # 0~1
-    is_breakout: bool
+    is_breakout: Optional[bool]
     reasons: List[str]
 
 @dataclass
@@ -425,14 +425,6 @@ class ValidityResult:
     quality: float                # 0~1
     reasons: List[str]
 
-@dataclass
-class PositionState:
-    symbol: str
-    side: Side
-    size: float
-    entry_price: float
-    leverage: float
-    stop_price: Optional[float] = None
 
 @dataclass
 class SignalSnapshot:
@@ -552,6 +544,17 @@ class PerpPosition:
         if self.szi < 0:
             return "short"
         return None
+
+    @property
+    def side_enum(self) -> Side:
+        """
+        策略 / 风控层使用的强类型 side
+        """
+        if self.szi is None or self.szi == 0:
+            return Side.NONE
+        if self.szi > 0:
+            return Side.LONG
+        return Side.SHORT
 
     @property
     def abs_size(self) -> Optional[float]:

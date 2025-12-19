@@ -81,6 +81,7 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         df_5m=indicators_5m,
         regime=regime,
         asset_info=asset_info,
+        position=account_overview.positions,
         now_ts=now_ts
     )
 
