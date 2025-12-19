@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Literal
 
 import pandas as pd
 
@@ -26,9 +26,8 @@ from src.models import (
     PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot, PositionState, TradePlan,
 )
 from src.tools.system_config import measure_time
-
-
-
+from src.tools.utils import max_notional_by_equity, estimate_qty_from_notional, round_qty_by_decimals
+from src.trading import account_total_usdc, position_to_state, find_position
 
 
 def _q_state(cur: float, p20: float, p80: float) -> VolState:
@@ -905,157 +904,87 @@ def build_signal(df_1h, df_15m, df_5m, regime:"Decision", asset_info, now_ts: fl
         created_ts=now_ts
     )
 
-def derive_trade_plan(
-    signal: SignalSnapshot,
-    regime: Decision,
-    account: AccountOverview,
-    asset_info: PerpAssetInfo,
+OrderType = Literal["MARKET", "LIMIT"]
+def signal_to_trade_plan(
+    *,
+    signal: "SignalSnapshot",
+    regime: "Decision",
+    account: "AccountOverview",
+    asset: "PerpAssetInfo",
     symbol: str,
     risk_pct: float,
     leverage: float,
+    post_only: bool,
     slippage: float = 0.001,
+    rr: float = 1.8,   # take-profit = rr * R
 ) -> TradePlan:
-    """
-    把策略信号转成【唯一可执行的交易计划】
-    """
-
-    # =========================================================
-    # 0️⃣ 无信号 / 禁止新开
-    # =========================================================
+    # 0) 没信号 / 环境禁止
     if not signal.entry_ok:
-        return TradePlan(
-            action="NONE",
-            symbol=symbol,
-            side=None,
-            qty=0.0,
-            entry_type="MARKET",
-            entry_price=None,
-            stop_price=None,
-            take_profit=None,
-            reduce_only=False,
-            post_only=False,
-            reason=["signal.entry_ok == False"]
-        )
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["signal.entry_ok = False"])
 
     if not getattr(regime, "allow_new_entry", True):
-        return TradePlan(
-            action="NONE",
-            symbol=symbol,
-            side=None,
-            qty=0.0,
-            entry_type="MARKET",
-            entry_price=None,
-            stop_price=None,
-            take_profit=None,
-            reduce_only=False,
-            post_only=False,
-            reason=["regime disallows new entry"]
-        )
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["regime disallows new entry"])
 
-    # =========================================================
-    # 1️⃣ 仓位冲突检查（不加仓、不反向）
-    # =========================================================
-    pos = account.get_position(symbol)
-    if pos and pos.has_position:
-        if pos.side == signal.side:
-            return TradePlan(
-                action="NONE",
-                symbol=symbol,
-                side=None,
-                qty=0.0,
-                entry_type="MARKET",
-                entry_price=None,
-                stop_price=None,
-                take_profit=None,
-                reduce_only=False,
-                post_only=False,
-                reason=["existing same-side position"]
-            )
+    if signal.side == Side.NONE:
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["signal.side = NONE"])
 
-    # =========================================================
-    # 2️⃣ 风险预算 → 仓位大小
-    # =========================================================
-    equity = account.total_usdc
-    risk_cap = equity * risk_pct * getattr(regime, "risk_scale", 1.0)
+    # 1) 仓位冲突：默认不加仓、不反手（你以后再加）
+    pos_raw = find_position(account, symbol)
+    if pos_raw:
+        pos = position_to_state(pos_raw)
+        if pos.size > 0 and pos.side == signal.side:
+            return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                             ["existing same-side position -> skip"])
 
-    entry = signal.entry_price_hint
-    stop  = signal.stop_price
+    # 2) 风险预算
+    equity = account_total_usdc(account)
+    risk_budget = equity * float(risk_pct) * float(getattr(regime, "risk_scale", 1.0) or 1.0)
 
-    if entry is None or stop is None:
-        return TradePlan(
-            action="NONE",
-            symbol=symbol,
-            side=None,
-            qty=0.0,
-            entry_type="MARKET",
-            entry_price=None,
-            stop_price=None,
-            take_profit=None,
-            reduce_only=False,
-            post_only=False,
-            reason=["missing entry or stop price"]
-        )
+    entry_ref = signal.entry_price_hint
+    stop = signal.stop_price
+    if entry_ref is None or stop is None:
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["missing entry_ref or stop_price"])
 
-    risk_per_unit = abs(entry - stop)
-    if risk_per_unit <= 0:
-        return TradePlan(
-            action="NONE",
-            symbol=symbol,
-            side=None,
-            qty=0.0,
-            entry_type="MARKET",
-            entry_price=None,
-            stop_price=None,
-            take_profit=None,
-            reduce_only=False,
-            post_only=False,
-            reason=["invalid risk_per_unit"]
-        )
+    R = abs(entry_ref - stop)
+    if R <= 0:
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["invalid R (entry-stop <= 0)"])
 
-    raw_qty = risk_cap / risk_per_unit
-    raw_qty = min(raw_qty, asset_info.max_position_size(leverage))
-    qty = asset_info.round_qty(raw_qty)
+    # 3) 用风险算 qty（核心）
+    raw_qty = risk_budget / R
 
+    # 4) 再加一个“名义上限”兜底（防止风控参数异常）
+    max_notional = max_notional_by_equity(equity, leverage)
+    max_qty_by_notional = estimate_qty_from_notional(max_notional, entry_ref)
+    qty = min(raw_qty, max_qty_by_notional)
+
+    # 5) 数量精度
+    qty = round_qty_by_decimals(qty, int(asset.size_decimals or 0))
     if qty <= 0:
-        return TradePlan(
-            action="NONE",
-            symbol=symbol,
-            side=None,
-            qty=0.0,
-            entry_type="MARKET",
-            entry_price=None,
-            stop_price=None,
-            take_profit=None,
-            reduce_only=False,
-            post_only=False,
-            reason=["qty too small"]
-        )
+        return TradePlan("NONE", symbol, None, 0.0, "MARKET", None, None, None, False, post_only,
+                         ["qty too small after rounding"])
 
-    # =========================================================
-    # 3️⃣ 下单方式选择（分数驱动）
-    # =========================================================
+    # 6) 下单类型：分数高 -> 市价，分数一般 -> 限价（更省滑点）
     if signal.score >= 90:
-        entry_type = "MARKET"
+        entry_type: OrderType = "MARKET"
         entry_price = None
     else:
-        entry_type = "LIMIT"
+        entry_type: OrderType = "LIMIT"
         if signal.side == Side.LONG:
-            entry_price = entry * (1 - slippage)
+            entry_price = entry_ref * (1 - slippage)
         else:
-            entry_price = entry * (1 + slippage)
+            entry_price = entry_ref * (1 + slippage)
 
-    # =========================================================
-    # 4️⃣ 止盈（1.8R 稳健实盘）
-    # =========================================================
-    R = abs(entry - stop)
+    # 7) 止盈：按 RR
     if signal.side == Side.LONG:
-        tp = entry + 1.8 * R
+        tp = entry_ref + rr * R
     else:
-        tp = entry - 1.8 * R
+        tp = entry_ref - rr * R
 
-    # =========================================================
-    # 5️⃣ 生成 TradePlan
-    # =========================================================
     return TradePlan(
         action="OPEN",
         symbol=symbol,
@@ -1066,6 +995,6 @@ def derive_trade_plan(
         stop_price=stop,
         take_profit=tp,
         reduce_only=False,
-        post_only=False,
-        reason=signal.reasons
+        post_only=post_only,
+        reasons=signal.reasons,
     )

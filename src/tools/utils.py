@@ -6,7 +6,7 @@ Keep it dependency-light to avoid circular imports.
 """
 
 from __future__ import annotations
-
+import math
 import functools
 import time
 from typing import Any, Iterable
@@ -73,4 +73,25 @@ def hl_candles_to_ohlcv_list(candles: Iterable[dict[str, Any]]) -> list[list[flo
             ]
         )
     return out
+
+
+
+def round_qty_by_decimals(qty: float, size_decimals: int) -> float:
+    if qty <= 0:
+        return 0.0
+    p = 10 ** int(size_decimals or 0)
+    return math.floor(qty * p) / p
+
+
+def max_notional_by_equity(equity_usdc: float, leverage: float) -> float:
+    # 保守：用 equity * leverage 当最大名义（你也可改成 withdrawable 或 free_usdc）
+    if equity_usdc <= 0:
+        return 0.0
+    return float(equity_usdc) * float(leverage)
+
+
+def estimate_qty_from_notional(notional: float, price: float) -> float:
+    if notional <= 0 or price <= 0:
+        return 0.0
+    return notional / price
 

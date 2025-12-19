@@ -416,11 +416,12 @@ class ValidityResult:
 
 @dataclass
 class PositionState:
-    has_position: bool
-    side: "Side"                 # 当前持仓方向
-    entry_price: float           # 实际入场价（实盘成交价）
-    size: float                  # 持仓数量
-    stop_price: Optional[float] = None  # 当前挂着/记录的止损（可选）
+    symbol: str
+    side: Side
+    size: float
+    entry_price: float
+    leverage: float
+    stop_price: Optional[float] = None
 
 @dataclass
 class SignalSnapshot:
@@ -439,12 +440,12 @@ class SignalSnapshot:
 @dataclass
 class TradePlan:
     action: Literal["OPEN", "CLOSE", "FLIP", "NONE"]
-
     symbol: str
-    side: Optional[Side]           # LONG / SHORT
-    qty: float                     # 合约数量
+    side: Optional[Side]          # OPEN/FLIP 时必填
+    qty: float
+
     entry_type: Literal["MARKET", "LIMIT"]
-    entry_price: Optional[float]
+    entry_price: Optional[float]  # LIMIT 时用
 
     stop_price: Optional[float]
     take_profit: Optional[float]
@@ -452,4 +453,4 @@ class TradePlan:
     reduce_only: bool
     post_only: bool
 
-    reason: List[str]
+    reasons: List[str]
