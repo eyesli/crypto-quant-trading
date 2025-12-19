@@ -363,23 +363,7 @@ class Decision:
     # 订单簿（盘口）快照。
     # 包含买一卖一价、挂单深度等，用于分析当时的流动性是否充足。
 
-@dataclass(frozen=True)
-class TradePlan:
-    """
-    最终交易计划：由 generate_trade_plan 生成（旧版本，保留用于向后兼容）
-    """
-    symbol: str  # 交易对符号
-    action: PlanAction  # 交易动作（OPEN/CLOSE/HOLD/FLIP）
-    direction: Optional[PositionSide] = None  # 开仓方向（long/short/flat）
-    close_direction: Optional[PositionSide] = None  # 平仓方向
-    order_type: OrderType = "market"  # 订单类型（market/limit）
-    entry_price: Optional[float] = None  # 入场价格（限价单时使用）
-    open_amount: float = 0.0  # 开仓数量
-    close_amount: float = 0.0  # 平仓数量
-    stop_loss: Optional[float] = None  # 止损价格
-    take_profit: Optional[float] = None  # 止盈价格
-    reason: str = ""  # 交易原因说明
-    score: float = 0.0  # 信号评分
+
 
 
 # =============================================================================
@@ -478,8 +462,10 @@ class TradePlan:
 
     reduce_only: bool  # 是否仅减仓（不允许开新仓）
     post_only: bool  # 是否仅挂单（Post Only 模式）
-
+    # open_amount: float = 0.0  # 开仓数量
+    # close_amount: float = 0.0  # 平仓数量
     reasons: List[str]  # 交易原因说明
+
 
 
 

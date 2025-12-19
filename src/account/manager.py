@@ -7,42 +7,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Dict, Optional, List, Tuple
 
-from src.data.models import Side, AccountOverview, PerpPosition, NormalOrder, TriggerOrder, PositionTpsl, PositionOrders
+from src.data.models import Side, PerpPosition, NormalOrder, TriggerOrder, PositionTpsl, PositionOrders
 from src.tools.utils import _to_float
-
-
-def _extract_trigger_price(order: Dict[str, Any]) -> Optional[float]:
-    # 兼容不同字段命名
-    for k in ("triggerPx", "triggerPrice", "stopPx", "stopPrice"):
-        v = order.get(k)
-        if v is not None:
-            return _to_float(v)
-
-    # 有的返回会把触发信息放在 trigger / orderType 里
-    trig = order.get("trigger") or order.get("orderType") or {}
-    if isinstance(trig, dict):
-        for k in ("triggerPx", "triggerPrice", "stopPx", "stopPrice"):
-            v = trig.get(k)
-            if v is not None:
-                return _to_float(v)
-
-    return None
-def account_total_usdc(account: AccountOverview) -> float:
-    """获取账户总权益（USDC）"""
-    # 优先使用强类型的 state.margin_summary.account_value
-    if account.state is not None:
-        if account.state.margin_summary and account.state.margin_summary.account_value is not None:
-            return float(account.state.margin_summary.account_value)
-    
-    # 兜底：使用 raw_user_state
-    us = account.raw_user_state or {}
-    margin = us.get("marginSummary") or {}
-    v = margin.get("accountValue")
-    try:
-        return float(v) if v is not None else 0.0
-    except Exception:
-        return 0.0
-
 
 
 def _to_int(x: Any) -> Optional[int]:

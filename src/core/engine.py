@@ -33,12 +33,7 @@ MAX_SPREAD_BPS = 2.0
 
 @measure_time
 def start_trade(exchange: Exchange, state: RegimeState) -> None:
-    """
-    单轮运行：
-    - 拉取账户 + 市场数据
-    - 策略生成 TradePlan
-    - 执行器（可 DRY_RUN）
-    """
+
     account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"), SYMBOL)
 
     df_1h = ohlcv_to_df(hl_candles_to_ohlcv_list(

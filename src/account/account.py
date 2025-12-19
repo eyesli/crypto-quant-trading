@@ -188,17 +188,6 @@ def fetch_account_overview(info: Info, address: str,primary_symbol: Optional[str
                 primary_position = p
                 break
 
-    # ---（可选）保持你原来的打印行为，但不要影响返回强类型 ---
-    print("💰 账户余额概览")
-    total_usdc = state.margin_summary.account_value
-    used_usdc = state.margin_summary.total_margin_used
-    free_usdc = state.withdrawable
-
-    print(f"总权益:      {total_usdc if total_usdc is not None else '-'} USDC")
-    print(f"可用余额:    {free_usdc if free_usdc is not None else '-'} USDC")
-    print(f"已用保证金:  {used_usdc if used_usdc is not None else '-'} USDC")
-    print("=" * 60 + "\n")
-
     return AccountOverview(
         state=state,
         positions=positions,
