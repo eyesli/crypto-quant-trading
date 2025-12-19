@@ -11,7 +11,7 @@ from src.account import fetch_account_overview
 from src.market_data import ohlcv_to_df, compute_technical_factors, classify_trend_range, classify_timing_state, \
     fetch_order_book_info, build_perp_asset_map
 from src.models import RegimeState, Action, PerpAssetInfo, Decision
-from src.strategy import classify_vol_state, decide_regime, build_signal, derive_trade_plan
+from src.strategy import classify_vol_state, decide_regime, build_signal, signal_to_trade_plan
 from src.tools.system_config import measure_time
 from src.tools.utils import candles_last_n_closed, hl_candles_to_ohlcv_list
 
@@ -78,14 +78,15 @@ def start_trade(exchange: Exchange, state: RegimeState) -> None:
         # account_overview
     )
     #
-    plan = derive_trade_plan(
+    plan = signal_to_trade_plan(
         signal=signal,
         regime=regime,
         account=account_overview,
-        asset_info=asset_info,
+        asset=asset_info,
         symbol=SYMBOL,
         risk_pct=RISK_PCT,
         leverage=LEVERAGE,
+        post_only=POST_ONLY,
         slippage=LOOP_SLIPPAGE,
     )
 
