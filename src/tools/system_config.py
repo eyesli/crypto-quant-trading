@@ -16,6 +16,6 @@ def measure_time(func):
             end_time = time.perf_counter()
             elapsed = end_time - start_time
             # 只有耗时超过 0.1秒 才打印，避免刷屏（可选）
-            if elapsed > 0:
+            if elapsed > 10:
                 print(f"⏱️ [{func.__name__}] 耗时: {elapsed:.4f} 秒")
     return wrapper

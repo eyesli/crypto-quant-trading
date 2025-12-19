@@ -22,17 +22,17 @@ def main() -> None:
 
     load_dotenv()
     try:
-        exchange = Exchange(
-            wallet=Account.from_key(os.environ.get("HL_PRIVATE_KEY")),
-            base_url=MAINNET_API_URL,
-            account_address=os.environ.get("HL_WALLET_ADDRESS"),
-            timeout=10.0,
-        )
-        state = RegimeState()
-        start_trade(exchange, state)
-        # while True:
-        #
-        #     time.sleep(1200)
+
+        while True:
+            exchange = Exchange(
+                wallet=Account.from_key(os.environ.get("HL_PRIVATE_KEY")),
+                base_url=MAINNET_API_URL,
+                account_address=os.environ.get("HL_WALLET_ADDRESS"),
+                timeout=10.0,
+            )
+            state = RegimeState()
+            start_trade(exchange, state)
+            time.sleep(60)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断程序")
         sys.exit(0)
