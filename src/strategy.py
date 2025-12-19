@@ -23,7 +23,7 @@ from src.models import (
     TrendLineSignal,
     VolatilitySignal,
     VolumeConfirmationSignal, OrderBookInfo, Decision, Action, MarketRegime, VolState, TimingState, Slope,
-    PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot, PositionState,
+    PerpAssetInfo, DirectionResult, Side, TriggerResult, ValidityResult, SignalSnapshot, PositionState, TradePlan,
 )
 from src.tools.system_config import measure_time
 
@@ -903,4 +903,169 @@ def build_signal(df_1h, df_15m, df_5m, regime:"Decision", asset_info, now_ts: fl
         reasons=reasons,
         ttl_seconds=(45 if getattr(regime, "strict_entry", False) else 120),
         created_ts=now_ts
+    )
+
+def derive_trade_plan(
+    signal: SignalSnapshot,
+    regime: Decision,
+    account: AccountOverview,
+    asset_info: PerpAssetInfo,
+    symbol: str,
+    risk_pct: float,
+    leverage: float,
+    slippage: float = 0.001,
+) -> TradePlan:
+    """
+    把策略信号转成【唯一可执行的交易计划】
+    """
+
+    # =========================================================
+    # 0️⃣ 无信号 / 禁止新开
+    # =========================================================
+    if not signal.entry_ok:
+        return TradePlan(
+            action="NONE",
+            symbol=symbol,
+            side=None,
+            qty=0.0,
+            entry_type="MARKET",
+            entry_price=None,
+            stop_price=None,
+            take_profit=None,
+            reduce_only=False,
+            post_only=False,
+            reason=["signal.entry_ok == False"]
+        )
+
+    if not getattr(regime, "allow_new_entry", True):
+        return TradePlan(
+            action="NONE",
+            symbol=symbol,
+            side=None,
+            qty=0.0,
+            entry_type="MARKET",
+            entry_price=None,
+            stop_price=None,
+            take_profit=None,
+            reduce_only=False,
+            post_only=False,
+            reason=["regime disallows new entry"]
+        )
+
+    # =========================================================
+    # 1️⃣ 仓位冲突检查（不加仓、不反向）
+    # =========================================================
+    pos = account.get_position(symbol)
+    if pos and pos.has_position:
+        if pos.side == signal.side:
+            return TradePlan(
+                action="NONE",
+                symbol=symbol,
+                side=None,
+                qty=0.0,
+                entry_type="MARKET",
+                entry_price=None,
+                stop_price=None,
+                take_profit=None,
+                reduce_only=False,
+                post_only=False,
+                reason=["existing same-side position"]
+            )
+
+    # =========================================================
+    # 2️⃣ 风险预算 → 仓位大小
+    # =========================================================
+    equity = account.total_usdc
+    risk_cap = equity * risk_pct * getattr(regime, "risk_scale", 1.0)
+
+    entry = signal.entry_price_hint
+    stop  = signal.stop_price
+
+    if entry is None or stop is None:
+        return TradePlan(
+            action="NONE",
+            symbol=symbol,
+            side=None,
+            qty=0.0,
+            entry_type="MARKET",
+            entry_price=None,
+            stop_price=None,
+            take_profit=None,
+            reduce_only=False,
+            post_only=False,
+            reason=["missing entry or stop price"]
+        )
+
+    risk_per_unit = abs(entry - stop)
+    if risk_per_unit <= 0:
+        return TradePlan(
+            action="NONE",
+            symbol=symbol,
+            side=None,
+            qty=0.0,
+            entry_type="MARKET",
+            entry_price=None,
+            stop_price=None,
+            take_profit=None,
+            reduce_only=False,
+            post_only=False,
+            reason=["invalid risk_per_unit"]
+        )
+
+    raw_qty = risk_cap / risk_per_unit
+    raw_qty = min(raw_qty, asset_info.max_position_size(leverage))
+    qty = asset_info.round_qty(raw_qty)
+
+    if qty <= 0:
+        return TradePlan(
+            action="NONE",
+            symbol=symbol,
+            side=None,
+            qty=0.0,
+            entry_type="MARKET",
+            entry_price=None,
+            stop_price=None,
+            take_profit=None,
+            reduce_only=False,
+            post_only=False,
+            reason=["qty too small"]
+        )
+
+    # =========================================================
+    # 3️⃣ 下单方式选择（分数驱动）
+    # =========================================================
+    if signal.score >= 90:
+        entry_type = "MARKET"
+        entry_price = None
+    else:
+        entry_type = "LIMIT"
+        if signal.side == Side.LONG:
+            entry_price = entry * (1 - slippage)
+        else:
+            entry_price = entry * (1 + slippage)
+
+    # =========================================================
+    # 4️⃣ 止盈（1.8R 稳健实盘）
+    # =========================================================
+    R = abs(entry - stop)
+    if signal.side == Side.LONG:
+        tp = entry + 1.8 * R
+    else:
+        tp = entry - 1.8 * R
+
+    # =========================================================
+    # 5️⃣ 生成 TradePlan
+    # =========================================================
+    return TradePlan(
+        action="OPEN",
+        symbol=symbol,
+        side=signal.side,
+        qty=qty,
+        entry_type=entry_type,
+        entry_price=entry_price,
+        stop_price=stop,
+        take_profit=tp,
+        reduce_only=False,
+        post_only=False,
+        reason=signal.reasons
     )

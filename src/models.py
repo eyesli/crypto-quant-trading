@@ -435,3 +435,21 @@ class SignalSnapshot:
     reasons: List[str]
     ttl_seconds: int
     created_ts: float
+
+@dataclass
+class TradePlan:
+    action: Literal["OPEN", "CLOSE", "FLIP", "NONE"]
+
+    symbol: str
+    side: Optional[Side]           # LONG / SHORT
+    qty: float                     # 合约数量
+    entry_type: Literal["MARKET", "LIMIT"]
+    entry_price: Optional[float]
+
+    stop_price: Optional[float]
+    take_profit: Optional[float]
+
+    reduce_only: bool
+    post_only: bool
+
+    reason: List[str]
