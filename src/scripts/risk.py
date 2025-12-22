@@ -1,12 +1,9 @@
 from hyperliquid.utils.constants import MAINNET_API_URL
 
-import os
 from eth_account import Account
 from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
 
-from src.account.account import fetch_account_overview
+from src.data.exchange_manager import create_exchange
 
 HL_WALLET_ADDRESS = "0xc49390C1856502E7eC6A31a72f1bE31F5760D96D"
 HL_PRIVATE_KEY = "0xfe707e4e91e8ffdb1df1996ccd667e4bdf68c7b92a828c391551e582cfc056c0"
@@ -90,6 +87,7 @@ if __name__ == "__main__":
     # # )
 
     # ✅ 查询账户概览（用 Info）
-    orders = fetch_account_overview(ex.info, HL_WALLET_ADDRESS)
-    print("user_state keys:", orders)
+    exchange = create_exchange()
+    # orders = fetch_account_overview(ex.info, HL_WALLET_ADDRESS)
+    print("user_state keys:", exchange.orders)
     # print("user_state keys:", sl)

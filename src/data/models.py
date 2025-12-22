@@ -20,12 +20,6 @@ PositionSide = Literal["long", "short", "flat"]
 PlanAction = Literal["OPEN", "CLOSE", "HOLD", "FLIP"]
 OrderType = Literal["market", "limit"]
 
-@dataclass
-class AccountOverview:
-    """账户概览（旧版本，保留用于向后兼容）"""
-    raw_user_state: Dict[str, Any]  # 原始用户状态字典
-    positions: List[Dict[str, Any]]  # 仓位列表（字典格式）
-    open_orders: List[Dict[str, Any]]  # 挂单列表（字典格式）
 
 class Action(str, Enum):
     """交易动作枚举"""
@@ -508,7 +502,7 @@ class LeverageInfo:
         return LeverageInfo(type=None, value=_to_float(v))
 
 
-@dataclass(frozen=True)
+@dataclass
 class PerpPosition:
     """永续合约仓位信息"""
 
@@ -570,15 +564,16 @@ class PerpPosition:
             coin=coin,
             cum_funding=CumFunding.from_dict(d.get("cumFunding")),
             entry_px=_to_float(d.get("entryPx")),
-            liquidation_px=_to_float(d.get("liquidationPx") or d.get("liquidationPrice")),
+            liquidation_px=_to_float(d.get("liquidationPx") ),
             margin_used=_to_float(d.get("marginUsed")),
             max_leverage=_to_float(d.get("maxLeverage")),
-            szi=_to_float(d.get("szi") or d.get("size") or d.get("contracts")),
-            position_value=_to_float(d.get("positionValue") or d.get("notional")),
-            unrealized_pnl=_to_float(d.get("unrealizedPnl") or d.get("upnl")),
-            return_on_equity=_to_float(d.get("returnOnEquity") or d.get("roe") or d.get("percentage")),
+            szi=_to_float(d.get("szi")),
+            position_value=_to_float(d.get("positionValue")),
+            unrealized_pnl=_to_float(d.get("unrealizedPnl") ),
+            return_on_equity=_to_float(d.get("returnOnEquity") ),
             leverage=LeverageInfo.from_any(d.get("leverage")),
             raw=d,
+            orders=None
         )
 
 

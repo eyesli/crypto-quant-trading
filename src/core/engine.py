@@ -9,7 +9,7 @@ import time
 from typing import Dict
 
 from hyperliquid.exchange import Exchange
-
+import ccxt
 from src.account.account import fetch_account_overview
 from src.data.fetcher import ohlcv_to_df, fetch_order_book_info, build_perp_asset_map
 from src.data.indicators import compute_technical_factors
@@ -32,7 +32,7 @@ MAX_SPREAD_BPS = 2.0
 
 
 @measure_time
-def start_trade(exchange: Exchange, state: RegimeState) -> None:
+def start_trade(exchange: Exchange,okx_exchange: ccxt.okx, state: RegimeState) -> None:
 
     account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"), SYMBOL)
 
