@@ -21,6 +21,7 @@ def main() -> None:
     load_dotenv()
     try:
         okx_exchange = create_okx_exchange()
+        okx_exchange.load_markets()
         hyperliquid = create_hyperliquid_exchange()
         while True:
 
