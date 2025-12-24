@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Literal
 
 import pandas as pd
 
@@ -167,7 +167,96 @@ def compute_direction(df_1h: pd.DataFrame, regime: Decision) -> DirectionResult:
     return DirectionResult(side=side, confidence=conf, reasons=reasons)
 
 
-def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Decision) -> TriggerResult:
+def compute_mean_direction(
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    regime: Decision
+) -> DirectionResult:
+    """
+    均值回归方向层（Range Bias）：
+    - 依赖 15m EMA20/EMA50 间距与 ATR 判断“是否像震荡”
+    - EMA 轻微上倾/下倾时分别做“震荡向上/震荡向下”偏置
+    - 在中性震荡时，根据价格相对均值的“折价/溢价”决定多空
+    """
+    reasons: List[str] = ["mode: mean reversion"]
+
+    if not regime.allow_mean:
+        return DirectionResult(side=Side.NONE, confidence=0.0, reasons=reasons + ["regime: mean not allowed"])
+
+    need_cols_15m = ("close", "ema_20", "ema_50", "atr_14")
+    for c in need_cols_15m:
+        if c not in df_15m.columns:
+            return DirectionResult(side=Side.NONE, confidence=0.0, reasons=reasons + [f"15m: missing {c}"])
+    if len(df_15m) < 3:
+        return DirectionResult(side=Side.NONE, confidence=0.0, reasons=reasons + ["15m: insufficient bars (<3)"])
+
+    close15 = float(df_15m["close"].iloc[-1])
+    ema20_15 = float(df_15m["ema_20"].iloc[-1])
+    ema50_15 = float(df_15m["ema_50"].iloc[-1])
+    atr15 = float(df_15m["atr_14"].iloc[-1])
+
+    if atr15 <= 0:
+        return DirectionResult(side=Side.NONE, confidence=0.0, reasons=reasons + ["15m: ATR invalid (<=0)"])
+
+    # 轻量级 range 检测：EMA 间距相对 ATR 较小 → 更像震荡
+    ema_gap = abs(ema20_15 - ema50_15)
+    gap_to_atr = ema_gap / atr15 if atr15 > 0 else 0.0
+    range_like = gap_to_atr < 0.8
+
+    # 方向倾向：轻微上倾/下倾对应“震荡向上/震荡向下”，完全纠缠则靠价格位置决策
+    up_bias = ema20_15 > ema50_15 + 0.10 * atr15
+    down_bias = ema20_15 < ema50_15 - 0.10 * atr15
+
+    discount = close15 <= (ema50_15 - 0.30 * atr15)
+    premium = close15 >= (ema50_15 + 0.30 * atr15)
+
+    side = Side.NONE
+    conf = 0.30 if range_like else 0.20
+
+    if up_bias:
+        side = Side.LONG
+        conf = 0.48
+        reasons.append("mean: range-up bias (ema20>ema50)")
+        if discount:
+            conf += 0.10
+            reasons.append("mean: trading discount vs ema50")
+    elif down_bias:
+        side = Side.SHORT
+        conf = 0.48
+        reasons.append("mean: range-down bias (ema20<ema50)")
+        if premium:
+            conf += 0.10
+            reasons.append("mean: trading premium vs ema50")
+    else:
+        if discount:
+            side = Side.LONG
+            conf = 0.45
+            reasons.append("mean: neutral range buy-the-dip near lower band")
+        elif premium:
+            side = Side.SHORT
+            conf = 0.45
+            reasons.append("mean: neutral range sell-the-rip near upper band")
+        else:
+            reasons.append("mean: neutral range but no edge")
+
+    # 趋势强度惩罚：趋势太强时均值回归打折
+    adx_1h = None
+    if "adx_14" in df_1h.columns and len(df_1h) >= 1:
+        adx_1h = float(df_1h["adx_14"].iloc[-1])
+    if adx_1h is not None and adx_1h > 25:
+        conf *= 0.70
+        reasons.append(f"mean: adx strong ({adx_1h:.1f}) -> confidence *0.70")
+
+    conf = max(0.0, min(1.0, conf))
+    return DirectionResult(side=side, confidence=conf, reasons=reasons)
+
+
+def compute_trigger(
+    df_15m: pd.DataFrame,
+    dir_res: DirectionResult,
+    regime: Decision,
+    mode: Literal["trend", "mean"] = "trend"
+) -> TriggerResult:
     """
     15m Trigger（入场触发器，负责"现在能不能上车"）
 
@@ -231,77 +320,111 @@ def compute_trigger(df_15m: pd.DataFrame, dir_res: DirectionResult, regime: Deci
     entry_hint = None
     strength = 0.0
 
-    # -------- 5) A) 回调入场 Pullback trigger with ACTION confirmation --------
-    if dir_res.side == Side.LONG and in_bull_struct:
-        # reclaim: 本K曾触及/刺破EMA20，但收盘收回到EMA20之上
-        reclaim = (low <= ema20) and (close >= ema20)
-        # 动作确认：非 strict 要 (reclaim OR green)，strict 要 (reclaim AND green)
-        action_ok = (reclaim and is_green) if strict_entry else (reclaim or is_green)
+    # -------- 5) A) 回调入场（趋势模式） or 均值回归入场（震荡模式） --------
+    if mode == "mean":
+        # 震荡模式：在均值附近的折价/溢价做反向
+        range_guard = abs(ema20 - ema50) <= 1.5 * atr
+        if not range_guard:
+            return TriggerResult(False, None, 0.0, False, reasons + ["mean: ema spread too wide -> skip fade"])
 
-        # 位置 + 动作 + 收盘不在ema20下方（避免阴跌）
-        if near_ema20 and close >= ema20 and action_ok:
-            entry_ok = True
-            entry_hint = close
-            strength = 0.62 if strict_entry else 0.58
-            reasons.append("15m: pullback confirmed long")
-            if near_ema20: reasons.append("15m: near ema20")
-            if reclaim:    reasons.append("15m: reclaim (low<=ema20 & close>=ema20)")
-            if is_green:   reasons.append("15m: green candle")
+        discount_pad = (0.55 * atr) if strict_entry else (0.65 * atr)
+        reclaim_band = 0.25 * discount_pad
 
-    elif dir_res.side == Side.SHORT and in_bear_struct:
-        reject = (high >= ema20) and (close <= ema20)
-        action_ok = (reject and is_red) if strict_entry else (reject or is_red)
-
-        if near_ema20 and close <= ema20 and action_ok:
-            entry_ok = True
-            entry_hint = close
-            strength = 0.62 if strict_entry else 0.58
-            reasons.append("15m: pullback confirmed short")
-            if near_ema20: reasons.append("15m: near ema20")
-            if reject:     reasons.append("15m: reject (high>=ema20 & close<=ema20)")
-            if is_red:     reasons.append("15m: red candle")
-
-    # -------- 6) B) 突破前 N 根高点/低点 入场 Breakout trigger --------
-    is_breakout = False
-    if not entry_ok:
-        # 用前 N 根（不含当前K）来算 HH/LL；样本不足则自动缩短窗口
-        win_len = min(N, len(df_15m) - 1)
-        window = df_15m.iloc[-(win_len + 1):-1]  # exclude current bar
-        hh = float(window["high"].max())
-        ll = float(window["low"].min())
-
-        up_level = hh + breakout_pad
-        dn_level = ll - breakout_pad
-
-        if dir_res.side == Side.LONG and in_bull_struct:
-            # 事件触发：上一根没站上，当前收盘站上
-            if (prev_close < up_level) and (close >= up_level):
+        if dir_res.side == Side.LONG:
+            touch_discount = low <= (ema20 - discount_pad)
+            reclaim = close >= (ema20 - reclaim_band)
+            action_ok = (touch_discount and reclaim and is_green) if strict_entry else (touch_discount and (reclaim or is_green))
+            if touch_discount and action_ok:
                 entry_ok = True
-                is_breakout = True
-                entry_hint = up_level
-                strength = 0.65 if strict_entry else 0.60
-                reasons.append(f"15m: breakout close-confirmed above {win_len}-bar HH + pad (long)")
+                entry_hint = max(close, ema20 - 0.10 * discount_pad)
+                strength = 0.55 if strict_entry else 0.52
+                reasons.append("mean: fade lower band (discount vs ema20)")
+                if is_green: reasons.append("mean: green reclaim after sweep")
+        elif dir_res.side == Side.SHORT:
+            touch_premium = high >= (ema20 + discount_pad)
+            reject = close <= (ema20 + reclaim_band)
+            action_ok = (touch_premium and reject and is_red) if strict_entry else (touch_premium and (reject or is_red))
+            if touch_premium and action_ok:
+                entry_ok = True
+                entry_hint = min(close, ema20 + 0.10 * discount_pad)
+                strength = 0.55 if strict_entry else 0.52
+                reasons.append("mean: fade upper band (premium vs ema20)")
+                if is_red: reasons.append("mean: red rejection after sweep")
+
+        is_breakout = False
+
+    else:
+        # -------- 5) A) 回调入场 Pullback trigger with ACTION confirmation --------
+        if dir_res.side == Side.LONG and in_bull_struct:
+            # reclaim: 本K曾触及/刺破EMA20，但收盘收回到EMA20之上
+            reclaim = (low <= ema20) and (close >= ema20)
+            # 动作确认：非 strict 要 (reclaim OR green)，strict 要 (reclaim AND green)
+            action_ok = (reclaim and is_green) if strict_entry else (reclaim or is_green)
+
+            # 位置 + 动作 + 收盘不在ema20下方（避免阴跌）
+            if near_ema20 and close >= ema20 and action_ok:
+                entry_ok = True
+                entry_hint = close
+                strength = 0.62 if strict_entry else 0.58
+                reasons.append("15m: pullback confirmed long")
+                if near_ema20: reasons.append("15m: near ema20")
+                if reclaim:    reasons.append("15m: reclaim (low<=ema20 & close>=ema20)")
+                if is_green:   reasons.append("15m: green candle")
 
         elif dir_res.side == Side.SHORT and in_bear_struct:
-            if (prev_close > dn_level) and (close <= dn_level):
+            reject = (high >= ema20) and (close <= ema20)
+            action_ok = (reject and is_red) if strict_entry else (reject or is_red)
+
+            if near_ema20 and close <= ema20 and action_ok:
                 entry_ok = True
-                is_breakout = True
-                entry_hint = dn_level
-                strength = 0.65 if strict_entry else 0.60
-                reasons.append(f"15m: breakdown close-confirmed below {win_len}-bar LL - pad (short)")
+                entry_hint = close
+                strength = 0.62 if strict_entry else 0.58
+                reasons.append("15m: pullback confirmed short")
+                if near_ema20: reasons.append("15m: near ema20")
+                if reject:     reasons.append("15m: reject (high>=ema20 & close<=ema20)")
+                if is_red:     reasons.append("15m: red candle")
 
-    # -------- 7) strict filters --------
-    if entry_ok and strict_entry:
-        # 7.1 EMA 纠缠过滤（震荡不做）
-        ema_gap = abs(ema20 - ema50)
-        if ema_gap < ema_tangle_gap:
-            return TriggerResult(False, None, 0.0, False, reasons + ["strict: ema20/ema50 too tight -> reject"])
+        # -------- 6) B) 突破前 N 根高点/低点 入场 Breakout trigger --------
+        is_breakout = False
+        if not entry_ok:
+            # 用前 N 根（不含当前K）来算 HH/LL；样本不足则自动缩短窗口
+            win_len = min(N, len(df_15m) - 1)
+            window = df_15m.iloc[-(win_len + 1):-1]  # exclude current bar
+            hh = float(window["high"].max())
+            ll = float(window["low"].min())
 
-        # 7.2 突破低波动过滤（死鱼盘不追突破）
-        if is_breakout:
-            if (atr / close) < min_breakout_natr:
-                return TriggerResult(False, None, 0.0, False,
-                                     reasons + ["strict: volatility too low for breakout -> reject"])
+            up_level = hh + breakout_pad
+            dn_level = ll - breakout_pad
+
+            if dir_res.side == Side.LONG and in_bull_struct:
+                # 事件触发：上一根没站上，当前收盘站上
+                if (prev_close < up_level) and (close >= up_level):
+                    entry_ok = True
+                    is_breakout = True
+                    entry_hint = up_level
+                    strength = 0.65 if strict_entry else 0.60
+                    reasons.append(f"15m: breakout close-confirmed above {win_len}-bar HH + pad (long)")
+
+            elif dir_res.side == Side.SHORT and in_bear_struct:
+                if (prev_close > dn_level) and (close <= dn_level):
+                    entry_ok = True
+                    is_breakout = True
+                    entry_hint = dn_level
+                    strength = 0.65 if strict_entry else 0.60
+                    reasons.append(f"15m: breakdown close-confirmed below {win_len}-bar LL - pad (short)")
+
+        # -------- 7) strict filters --------
+        if entry_ok and strict_entry:
+            # 7.1 EMA 纠缠过滤（震荡不做）
+            ema_gap = abs(ema20 - ema50)
+            if ema_gap < ema_tangle_gap:
+                return TriggerResult(False, None, 0.0, False, reasons + ["strict: ema20/ema50 too tight -> reject"])
+
+            # 7.2 突破低波动过滤（死鱼盘不追突破）
+            if is_breakout:
+                if (atr / close) < min_breakout_natr:
+                    return TriggerResult(False, None, 0.0, False,
+                                         reasons + ["strict: volatility too low for breakout -> reject"])
 
     return TriggerResult(entry_ok, entry_hint, strength, is_breakout, reasons)
 
@@ -500,25 +623,57 @@ def build_signal(
 ) -> SignalSnapshot:
     """构建完整的交易信号"""
 
-    dir_res = compute_direction(df_1h, regime)
-    trg_res = compute_trigger(df_15m, dir_res, regime)
-    val_res = compute_validity_and_risk(df_15m, df_5m, dir_res, trg_res, regime, position)
+    # === 1) 趋势链路 ===
+    dir_trend = compute_direction(df_1h, regime)
+    trg_trend = compute_trigger(df_15m, dir_trend, regime, mode="trend")
+    val_trend = compute_validity_and_risk(df_15m, df_5m, dir_trend, trg_trend, regime, position)
 
-    score, reasons = score_signal(dir_res, trg_res, val_res, regime)
+    score_trend, reasons_trend = score_signal(dir_trend, trg_trend, val_trend, regime)
+
     entry_threshold = 80.0 if regime.strict_entry else 70.0
+    entry_ok_trend = trg_trend.entry_ok and (score_trend >= entry_threshold) and (dir_trend.side != Side.NONE)
 
-    entry_ok = trg_res.entry_ok and (score >= entry_threshold) and (dir_res.side != Side.NONE)
+    candidates = [{
+        "label": "trend",
+        "dir": dir_trend,
+        "trg": trg_trend,
+        "val": val_trend,
+        "score": score_trend,
+        "entry_ok": entry_ok_trend,
+        "reasons": reasons_trend,
+    }]
+
+    # === 2) 均值回归链路（仅在允许时启用） ===
+    if regime.allow_mean:
+        dir_mean = compute_mean_direction(df_1h, df_15m, regime)
+        trg_mean = compute_trigger(df_15m, dir_mean, regime, mode="mean")
+        val_mean = compute_validity_and_risk(df_15m, df_5m, dir_mean, trg_mean, regime, position)
+        score_mean, reasons_mean = score_signal(dir_mean, trg_mean, val_mean, regime)
+        reasons_mean = ["mode: mean reversion"] + reasons_mean
+        entry_ok_mean = trg_mean.entry_ok and (score_mean >= entry_threshold) and (dir_mean.side != Side.NONE)
+        candidates.append({
+            "label": "mean",
+            "dir": dir_mean,
+            "trg": trg_mean,
+            "val": val_mean,
+            "score": score_mean,
+            "entry_ok": entry_ok_mean,
+            "reasons": reasons_mean,
+        })
+
+    # === 3) 选择最佳方案 ===
+    best = max(candidates, key=lambda c: c["score"])
 
     return SignalSnapshot(
-        side=dir_res.side,
-        entry_ok=entry_ok,
+        side=best["dir"].side,
+        entry_ok=best["entry_ok"],
         add_ok=False,  # 先禁用
-        exit_ok=val_res.exit_ok,
-        flip_ok=val_res.flip_ok,
-        entry_price_hint=trg_res.entry_price_hint,
-        stop_price=val_res.stop_price,
-        score=score,
-        reasons=reasons,
+        exit_ok=best["val"].exit_ok,
+        flip_ok=best["val"].flip_ok,
+        entry_price_hint=best["trg"].entry_price_hint,
+        stop_price=best["val"].stop_price,
+        score=best["score"],
+        reasons=best["reasons"],
         ttl_seconds=(45 if regime.strict_entry else 120),
         created_ts=now_ts
     )
