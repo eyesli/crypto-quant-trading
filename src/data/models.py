@@ -655,3 +655,39 @@ class PositionOrders:
     tpsl: PositionTpsl  # 止盈止损订单信息
     normal: Tuple[NormalOrder, ...]  # 普通订单列表
     raw_trigger: Tuple[TriggerOrder, ...]  # 未归类前同 coin 的全部 trigger 单（方便排查）
+
+@dataclass(frozen=True)
+class MeanReversionConfig:
+    # --- range 识别（越小越震荡） ---
+    gap_ok: float = 0.95
+    gap_bad: float = 1.55
+    slope_ok: float = 0.07
+    slope_bad: float = 0.18
+    range_score_min: float = 0.58
+    range_score_confirm_bars: int = 3  # 连续确认，抗抖
+
+    # --- 入场与风控（z = (close-anchor)/ATR） ---
+    z_entry: float = 0.38
+    z_strong: float = 0.80
+    z_max: float = 1.35  # 太极端不接
+
+    # --- 偏置（只做“倾向”，不做硬开关） ---
+    bias_soft: float = 0.06
+    bias_strong: float = 0.20
+    bias_weight: float = 0.12  # 对齐加减成比例
+
+    # --- squeeze / breakout 风险 ---
+    bbw_lookback: int = 200
+    bbw_q: float = 0.12              # 低于12%分位认为“挤压”
+    bbw_min_guard: Optional[float] = None  # 如果你不信分位数，可额外硬阈值
+    donchian_lookback: int = 20      # 近20根(15m)高低点
+    breakout_buffer_atr: float = 0.10 # 突破缓冲：0.10*ATR
+
+    # --- ADX 趋势惩罚（平滑） ---
+    adx_soft: float = 20.0
+    adx_strong: float = 35.0
+    adx_penalty_max: float = 0.50  # 最多打到 50% 折扣
+
+    # --- 置信度结构 ---
+    base_low: float = 0.32
+    base_high: float = 0.72

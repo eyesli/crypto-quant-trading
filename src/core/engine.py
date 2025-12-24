@@ -16,7 +16,7 @@ from src.data.indicators import compute_technical_factors
 from src.data.analyzer import classify_trend_range, classify_timing_state
 from src.data.models import RegimeState, PerpAssetInfo, Decision, TimingState
 from src.strategy.regime import classify_vol_state, decide_regime
-from src.strategy.signals import build_signal
+from src.strategy.signals import build_signal, compute_mean_direction
 from src.strategy.planner import signal_to_trade_plan
 from src.tools.performance import measure_time
 from src.tools.utils import hl_candles_to_ohlcv_list, candles_last_n_closed
@@ -74,6 +74,8 @@ def start_trade(exchange: Exchange,okx_exchange: ccxt.okx, state: RegimeState) -
         return
 
     now_ts = time.time()
+    compute_mean_direction(indicators_1h,indicators_15m,regime)
+
     signal = build_signal(
         df_1h=indicators_1h,
         df_15m=indicators_15m,

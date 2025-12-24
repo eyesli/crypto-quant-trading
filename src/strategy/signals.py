@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.account.manager import position_stop_price
 from src.data.models import Decision, DirectionResult, PerpAssetInfo, Side, SignalSnapshot, \
-    TriggerResult, ValidityResult, PerpPosition
+    TriggerResult, ValidityResult, PerpPosition, MeanReversionConfig
 from src.tools.performance import measure_time
 
 
@@ -522,3 +522,169 @@ def build_signal(
         ttl_seconds=(45 if regime.strict_entry else 120),
         created_ts=now_ts
     )
+
+
+from typing import List, Optional
+import pandas as pd
+
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+def _smoothstep(x: float, edge0: float, edge1: float) -> float:
+    """0~1 平滑过渡；x<=edge0 ->0, x>=edge1 ->1"""
+    if edge0 == edge1:
+        return 1.0 if x >= edge1 else 0.0
+    t = _clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+def _rolling_quantile(series: pd.Series, lookback: int, q: float) -> Optional[float]:
+    if series is None or len(series) < lookback:
+        return None
+    return float(series.iloc[-lookback:].quantile(q))
+
+
+def compute_mean_direction(
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    regime,
+    cfg: MeanReversionConfig = MeanReversionConfig()
+):
+    reasons: List[str] = ["mode: mean reversion (pro++)"]
+
+    if not regime.allow_mean:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["regime: mean not allowed"])
+
+    # 只做必要长度保护（避免 iloc 越界）
+    min_len = max(
+        10,
+        cfg.donchian_lookback + 5,
+        cfg.range_score_confirm_bars + 6,
+        cfg.bbw_lookback + 1,  # 用到分位数时需要
+    )
+    if len(df_15m) < min_len:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + [f"15m: insufficient bars (<{min_len})"])
+
+    close = float(df_15m["close"].iloc[-1])
+    ema20 = float(df_15m["ema_20"].iloc[-1])
+    ema50 = float(df_15m["ema_50"].iloc[-1])
+    atr = float(df_15m["atr_14"].iloc[-1])
+
+    if atr <= 0:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["15m: ATR invalid (<=0)"])
+
+    # ========= 1) Range Score：连续确认 =========
+    scores: List[float] = []
+    for k in range(cfg.range_score_confirm_bars):
+        idx = -1 - k
+
+        ema20_k = float(df_15m["ema_20"].iloc[idx])
+        ema50_k = float(df_15m["ema_50"].iloc[idx])
+        atr_k = float(df_15m["atr_14"].iloc[idx])
+        if atr_k <= 0:
+            continue
+
+        gap_to_atr = abs(ema20_k - ema50_k) / atr_k
+
+        back = 4
+        ema50_prev = float(df_15m["ema_50"].iloc[idx - back])
+        ema50_slope = (ema50_k - ema50_prev) / back
+        slope_to_atr = abs(ema50_slope) / atr_k
+
+        gap_range = 1.0 - _smoothstep(gap_to_atr, cfg.gap_ok, cfg.gap_bad)
+        slope_range = 1.0 - _smoothstep(slope_to_atr, cfg.slope_ok, cfg.slope_bad)
+
+        scores.append(0.45 * gap_range + 0.55 * slope_range)
+
+    if not scores:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: range_score unavailable"])
+
+    range_score = sum(scores) / len(scores)
+    reasons.append(f"mean: range_score(avg{len(scores)})={range_score:.2f}")
+
+    if range_score < cfg.range_score_min:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: not range-like -> skip"])
+
+    # ========= 2) Squeeze 过滤（BBW 分位数） =========
+    bbw = float(df_15m["bb_width"].iloc[-1])
+    qv = _rolling_quantile(df_15m["bb_width"], cfg.bbw_lookback, cfg.bbw_q)
+    if qv is not None and bbw <= qv:
+        reasons.append(f"mean: squeeze bb_width={bbw:.4f} <= q{cfg.bbw_q:.2f}({qv:.4f})")
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: volatility squeeze -> breakout risk"])
+
+    # ========= 3) Donchian 突破风险 =========
+    win = df_15m.iloc[-cfg.donchian_lookback:]
+    hi = float(win["close"].max())
+    lo = float(win["close"].min())
+
+    if close >= hi - cfg.breakout_buffer_atr * atr:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: near Donchian high -> breakout risk"])
+    if close <= lo + cfg.breakout_buffer_atr * atr:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: near Donchian low -> breakdown risk"])
+
+    # ========= 4) 动态 Anchor（EMA50 + VWAP/BBMid 融合） =========
+    vwap = float(df_15m["vwap"].iloc[-1])
+    bbmid = float(df_15m["bb_mid"].iloc[-1])
+
+    ema50_prev4 = float(df_15m["ema_50"].iloc[-5])
+    slope_to_atr_now = abs((ema50 - ema50_prev4) / 4.0) / atr
+    trendiness = _smoothstep(slope_to_atr_now, cfg.slope_ok, cfg.slope_bad)
+    w_ema = 0.55 + 0.35 * trendiness  # 0.55~0.90
+
+    other = 0.5 * vwap + 0.5 * bbmid
+    anchor = w_ema * ema50 + (1.0 - w_ema) * other
+    reasons.append(f"mean: anchor=ema50+vwap+bbmid, w_ema={w_ema:.2f}")
+
+    # ========= 5) 位置 z =========
+    z = (close - anchor) / atr
+    reasons.append(f"mean: z=(close-anchor)/ATR={z:.2f}")
+
+    if abs(z) >= cfg.z_max:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + [f"mean: z too extreme (|z|>={cfg.z_max}) -> avoid"])
+
+    # ========= 6) 偏置（倾向） =========
+    bias = (ema20 - ema50) / atr
+    bias_dir = 1 if bias > 0 else (-1 if bias < 0 else 0)
+    bias_score = _smoothstep(abs(bias), cfg.bias_soft, cfg.bias_strong)
+    reasons.append(f"mean: bias=(ema20-ema50)/ATR={bias:.2f}, bias_score={bias_score:.2f}")
+
+    # ========= 7) 生成方向 =========
+    if z <= -cfg.z_entry:
+        side = Side.LONG
+        pos_score = _smoothstep(-z, cfg.z_entry, cfg.z_strong)
+        align = 1.0 + cfg.bias_weight * (bias_score if bias_dir >= 0 else -bias_score)
+        reasons.append("mean: discount zone -> LONG")
+    elif z >= cfg.z_entry:
+        side = Side.SHORT
+        pos_score = _smoothstep(z, cfg.z_entry, cfg.z_strong)
+        align = 1.0 + cfg.bias_weight * (bias_score if bias_dir <= 0 else -bias_score)
+        reasons.append("mean: premium zone -> SHORT")
+    else:
+        return DirectionResult(side=Side.NONE, confidence=0.0,
+                               reasons=reasons + ["mean: near fair value -> no edge"])
+
+    conf = cfg.base_low + (cfg.base_high - cfg.base_low) * pos_score
+    conf *= (0.88 + 0.22 * range_score)
+    conf *= align
+    reasons.append(f"mean: align_weight x{align:.2f}")
+
+    # ========= 8) 1h ADX 平滑惩罚 =========
+    adx_1h = float(df_1h["adx_14"].iloc[-1])
+    t = _smoothstep(adx_1h, cfg.adx_soft, cfg.adx_strong)
+    penalty = 1.0 - cfg.adx_penalty_max * t
+    conf *= penalty
+    reasons.append(f"mean: ADX1h={adx_1h:.1f} -> penalty x{penalty:.2f}")
+
+    conf = _clamp(conf, 0.0, 1.0)
+    return DirectionResult(side=side, confidence=conf, reasons=reasons)
+
