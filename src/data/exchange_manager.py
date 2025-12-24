@@ -12,8 +12,6 @@ from typing import Optional
 
 # 配置信息
 
-PROXY = "http://127.0.0.1:7890"
-
 def create_okx_exchange() -> ccxt.okx:
     """
     创建交易所实例
@@ -38,6 +36,8 @@ def create_okx_exchange() -> ccxt.okx:
                 "defaultType": "swap",
             }
         })
+
+        PROXY = "http://127.0.0.1:7890"
         exchange.proxies={
             "http": PROXY,
             "https": PROXY,
@@ -58,9 +58,9 @@ def create_hyperliquid_exchange() -> "Exchange":
     """
 
     exchange = Exchange(
-            wallet=Account.from_key(os.environ.get("HL_PRIVATE_KEY")),
+            wallet=Account.from_key(must_env("HL_PRIVATE_KEY")),
             base_url=MAINNET_API_URL,
-            account_address=os.environ.get("HL_WALLET_ADDRESS"),
+            account_address=must_env("HL_WALLET_ADDRESS"),
             timeout=20.0,
         )
     return exchange
