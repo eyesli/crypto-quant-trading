@@ -10,7 +10,7 @@ from typing import Dict
 
 from hyperliquid.exchange import Exchange
 import ccxt
-from src.account.account import fetch_account_overview
+from src.account.account import fetch_account_overview, print_account_overview
 from src.data.fetcher import ohlcv_to_df, fetch_order_book_info, build_perp_asset_map
 from src.data.indicators import compute_technical_factors
 from src.data.analyzer import classify_trend_range, classify_timing_state
@@ -19,7 +19,7 @@ from src.strategy.regime import classify_vol_state, decide_regime
 from src.strategy.signals import build_signal
 from src.strategy.planner import signal_to_trade_plan
 from src.tools.performance import measure_time
-from src.tools.utils import candles_last_n_closed, hl_candles_to_ohlcv_list
+from src.tools.utils import hl_candles_to_ohlcv_list, candles_last_n_closed
 
 SYMBOL = "ETH"
 DRY_RUN = True
@@ -35,6 +35,7 @@ MAX_SPREAD_BPS = 2.0
 def start_trade(exchange: Exchange,okx_exchange: ccxt.okx, state: RegimeState) -> None:
 
     account_overview = fetch_account_overview(exchange.info, os.environ.get("HL_WALLET_ADDRESS"), SYMBOL)
+    print_account_overview(account_overview)
 
     df_1h = ohlcv_to_df(hl_candles_to_ohlcv_list(
         candles_last_n_closed(exchange.info, SYMBOL, "1h", limit=500)
@@ -53,6 +54,9 @@ def start_trade(exchange: Exchange,okx_exchange: ccxt.okx, state: RegimeState) -
 
     # 1h：环境/方向/权限
     base, adx = classify_trend_range(df=indicators_1h, prev=state.prev_base)
+    """
+    用 NATR + BB Width 两个"独立波动视角"做一致性判定
+    """
     vol_state, vol_dbg = classify_vol_state(indicators_1h)
     timing:TimingState = classify_timing_state(indicators_1h)
 
