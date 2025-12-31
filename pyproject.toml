@@ -34,6 +34,9 @@ dependencies = [
     "pandas-ta>=0.4.71b0",
     # 加载 .env 环境变量文件
     "python-dotenv>=1.0.0",
+    "solana>=0.36.10",
+    "solders>=0.27.1",
+    "websockets>=15.0.1",
 ]
 
 # 项目说明文档（发布到 PyPI 时展示）
