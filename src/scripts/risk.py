@@ -1,62 +1,96 @@
 import os
-import time
-from solana.rpc.api import Client
-from solders.pubkey import Pubkey
+import shutil
+from pathlib import Path
+from datetime import datetime
 
-# --- 1. 代理设置 (保持你刚才成功的设置) ---
-# 如果你的 VPN 端口不是 7890，记得改！
-os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
-os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
+# 定义文件类型映射关系
+# 您可以根据需要添加或修改后缀名
+FILE_CATEGORIES = {
+    "📂 快捷方式": [".lnk", ".url"],
+    "📂 图片素材": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".ico", ".webp"],
+    "📂 文档资料": [".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".pdf", ".txt", ".md", ".csv"],
+    "📂 压缩文件": [".zip", ".rar", ".7z", ".tar", ".gz", ".iso"],
+    "📂 程序与安装包": [".exe", ".msi", ".bat", ".sh"],
+    "📂 代码脚本": [".py", ".java", ".cs", ".rs", ".js", ".html", ".css", ".json", ".sql", ".go"],
+    "📂 视频音频": [".mp4", ".avi", ".mov", ".mp3", ".wav", ".flac"]
+}
 
-# --- 2. 连接主网 ---
-# 建议用 Helius 的地址，如果还没申请，先用官方的顶一下
-url = "https://api.mainnet-beta.solana.com"
-client = Client(url, timeout=30)  # 增加超时时间防止波动
+# 杂项文件夹名称
+OTHER_FOLDER = "📂 其他杂项"
 
-print(f"🔗 正在连接: {url} ...")
 
-try:
-    # --- 3. 锁定目标：Raydium Liquidity Pool V4 ---
-    # 我们来看看这个交易所地址最近干了啥
-    raydium_prog_id = Pubkey.from_string("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+def get_unique_filename(destination_folder, filename):
+    """
+    如果目标文件夹已存在同名文件，生成一个新文件名
+    例如: resume.pdf -> resume_1.pdf
+    """
+    base_name = filename.name
+    if not (destination_folder / base_name).exists():
+        return base_name
 
-    # --- 4. 获取它最近的一笔交易签名 (Signatures) ---
-    print("🕵️ 正在查询 Raydium 的最新交易签名...")
-    # limit=1 表示只拿最新的一条
-    sigs_resp = client.get_signatures_for_address(raydium_prog_id, limit=1)
+    stem = filename.stem
+    suffix = filename.suffix
+    counter = 1
 
-    if not sigs_resp.value:
-        print("❌ 没找到交易记录？不应该啊。")
-        exit()
+    while (destination_folder / f"{stem}_{counter}{suffix}").exists():
+        counter += 1
 
-    recent_sig = sigs_resp.value[0].signature
-    print(f"✅ 捕获到最新交易哈希: {recent_sig}")
-    print(f"   (你可以去 https://solscan.io/tx/{recent_sig} 对比着看)")
+    return f"{stem}_{counter}{suffix}"
 
-    # --- 5. 获取这笔交易的详细数据 (Transaction Details) ---
-    print("📦 正在下载交易详情 (解析比较慢，请耐心等待)...")
-    # max_supported_transaction_version=0 是必须的，否则解析不了新版交易
-    tx_resp = client.get_transaction(recent_sig, max_supported_transaction_version=0)
 
-    if tx_resp.value:
-        # 打印日志 (Logs) - 这是量化最喜欢看的部分
-        logs = tx_resp.value.transaction.meta.log_messages
-        print("\n📜 --- 交易日志 (部分) ---")
-        for i, log in enumerate(logs[:5]):  # 只打印前5行避免刷屏
-            print(f"[{i}] {log}")
-        print("...")
+def clean_desktop():
+    # 获取当前用户的桌面路径
+    desktop_path = Path.home() / "OneDrive - TDSYNNEX\Desktop"
 
-        # 简单判断发生了什么
-        log_str = str(logs)
-        if "Swap" in log_str:
-            print("\n💡 这是一个 [Swap/交易] 操作！有人在买卖币。")
-        elif "Initialize" in log_str:
-            print("\n💡 这是一个 [建池子] 操作！可能有新币上线。")
-        else:
-            print("\n💡 其他类型的复杂交互。")
+    # 检查路径是否存在
+    if not desktop_path.exists():
+        print(f"❌ 错误：找不到桌面路径 {desktop_path}")
+        return
 
-    else:
-        print("❌ 交易详情获取失败（可能是节点索引还没更新）。")
+    print(f"开始整理桌面：{desktop_path}")
+    print("-" * 30)
 
-except Exception as e:
-    print(f"\n❌ 报错了: {e}")
+    # 获取当前脚本的文件名，防止把自己也移走了
+    script_name = Path(__file__).name
+
+    moved_count = 0
+
+    # 遍历桌面上的所有文件
+    for item in desktop_path.iterdir():
+        # 跳过文件夹、跳过脚本本身、跳过隐藏文件
+        if item.is_dir() or item.name == script_name or item.name.startswith('.'):
+            continue
+
+        file_ext = item.suffix.lower()
+        destination_folder = None
+
+        # 匹配文件类型
+        for category, extensions in FILE_CATEGORIES.items():
+            if file_ext in extensions:
+                destination_folder = desktop_path / category
+                break
+
+        # 如果没有匹配到类型，归类到"其他"（可选，如果不想移动未知文件，注释掉下面两行）
+        if destination_folder is None:
+            destination_folder = desktop_path / OTHER_FOLDER
+
+        # 创建目标文件夹（如果不存在）
+        if not destination_folder.exists():
+            destination_folder.mkdir()
+
+        # 处理重名并移动
+        try:
+            new_filename = get_unique_filename(destination_folder, item)
+            shutil.move(str(item), str(destination_folder / new_filename))
+            print(f"✅ 已移动: {item.name} -> {destination_folder.name}/{new_filename}")
+            moved_count += 1
+        except Exception as e:
+            print(f"❌ 移动失败 {item.name}: {e}")
+
+    print("-" * 30)
+    print(f"🎉 整理完成！共移动了 {moved_count} 个文件。")
+
+
+if __name__ == "__main__":
+    clean_desktop()
+    input("\n按回车键退出...")

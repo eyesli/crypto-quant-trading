@@ -23,9 +23,13 @@ requires-python = ">=3.12"
 
 # 项目运行时依赖（生产环境依赖）
 dependencies = [
+    "bs4>=0.0.2",
     # 加密货币交易所统一接口库
     "ccxt>=4.5.28",
     # Hyperliquid 官方 Python SDK
+    "docx>=0.2.4",
+    "ebooklib>=0.20",
+    "fitz>=0.0.1.dev2",
     "hyperliquid-python-sdk>=0.21.0",
     # 数据分析核心库
     "openai>=2.13.0",
@@ -33,6 +37,8 @@ dependencies = [
     # 技术指标库（TA：ADX / ATR / RSI 等）
     "pandas-ta>=0.4.71b0",
     # 加载 .env 环境变量文件
+    "pdfplumber>=0.11.8",
+    "python-docx>=1.2.0",
     "python-dotenv>=1.0.0",
     "solana>=0.36.10",
     "solders>=0.27.1",
